@@ -13,6 +13,10 @@ export const PALETTE = new Uint8ClampedArray([
   237, 201, 81, 255,
 ]);
 
+export const EMPTY = ELEMENTS.EMPTY;
+export const WALL = ELEMENTS.WALL;
+export const SAND = ELEMENTS.SAND;
+
 export function createGameElements() {
   const canvas = document.getElementById('game-canvas');
 
