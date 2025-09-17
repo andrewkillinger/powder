@@ -45,7 +45,7 @@ ELEMENTS[WATER] = Object.freeze({
   density: 1000,
   immovable: false,
   viscosity: 1,
-  lateralRunMax: 2,
+  lateralRunMax: 6,
   buoyancy: 1,
 });
 
