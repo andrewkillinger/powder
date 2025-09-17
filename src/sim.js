@@ -1,5 +1,10 @@
+import { EMPTY, SAND } from './elements.js';
+
 const DEFAULT_WORLD_WIDTH = 256;
 const DEFAULT_WORLD_HEIGHT = 256;
+const FLAG_MOVED_THIS_TICK = 1 << 1;
+const CLEAR_MOVED_MASK = 0xff ^ FLAG_MOVED_THIS_TICK;
+const DEFAULT_STEP_SECONDS = 1 / 30;
 
 function normalizeDimension(value, fallback) {
   const numeric = Number(value);
@@ -72,6 +77,100 @@ export function createWorld(width, height) {
     idx,
     inBounds,
   };
+}
+
+function clearMovedFlags(world) {
+  if (!world || !world.flags) {
+    return;
+  }
+
+  const flags = world.flags;
+  const length = flags.length;
+
+  for (let i = 0; i < length; i += 1) {
+    flags[i] &= CLEAR_MOVED_MASK;
+  }
+}
+
+function moveCell(cells, flags, fromIndex, toIndex) {
+  cells[toIndex] = cells[fromIndex];
+  cells[fromIndex] = EMPTY;
+  flags[toIndex] = (flags[toIndex] & CLEAR_MOVED_MASK) | FLAG_MOVED_THIS_TICK;
+  flags[fromIndex] &= CLEAR_MOVED_MASK;
+}
+
+export function beginTick(world) {
+  clearMovedFlags(world);
+}
+
+export function endTick(world) {
+  clearMovedFlags(world);
+}
+
+export function step(world) {
+  if (!world || !world.cells || !world.flags) {
+    return;
+  }
+
+  const width = Math.trunc(Number(world.width) || 0);
+  const height = Math.trunc(Number(world.height) || 0);
+
+  if (width <= 0 || height <= 0) {
+    return;
+  }
+
+  const cells = world.cells;
+  const flags = world.flags;
+
+  for (let y = height - 1; y >= 0; y -= 1) {
+    const rowOffset = y * width;
+
+    for (let x = 0; x < width; x += 1) {
+      const index = rowOffset + x;
+
+      if (cells[index] !== SAND) {
+        continue;
+      }
+
+      if ((flags[index] & FLAG_MOVED_THIS_TICK) !== 0) {
+        continue;
+      }
+
+      const belowY = y + 1;
+
+      if (belowY >= height) {
+        continue;
+      }
+
+      const belowIndex = index + width;
+
+      if (cells[belowIndex] === EMPTY) {
+        moveCell(cells, flags, index, belowIndex);
+        continue;
+      }
+
+      const canMoveLeft = x > 0 && cells[belowIndex - 1] === EMPTY;
+      const canMoveRight = x + 1 < width && cells[belowIndex + 1] === EMPTY;
+
+      if (canMoveLeft && canMoveRight) {
+        if (Math.random() < 0.5) {
+          moveCell(cells, flags, index, belowIndex - 1);
+        } else {
+          moveCell(cells, flags, index, belowIndex + 1);
+        }
+        continue;
+      }
+
+      if (canMoveLeft) {
+        moveCell(cells, flags, index, belowIndex - 1);
+        continue;
+      }
+
+      if (canMoveRight) {
+        moveCell(cells, flags, index, belowIndex + 1);
+      }
+    }
+  }
 }
 
 export function paintCircle(world, x, y, radius, elementId) {
@@ -154,6 +253,7 @@ export function createSimulation(options = {}) {
   const state = {
     world,
     elapsed: 0,
+    stepSeconds: DEFAULT_STEP_SECONDS,
   };
 
   function update(deltaSeconds) {

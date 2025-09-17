@@ -7,7 +7,7 @@ import {
   SAND,
 } from './elements.js';
 import { createRenderer } from './render.js';
-import { createSimulation, paintCircle } from './sim.js';
+import { createSimulation, paintCircle, beginTick, endTick, step as stepWorld } from './sim.js';
 import { initializeUI } from './ui.js';
 import { runSelfChecks } from './selfcheck.js';
 
@@ -15,6 +15,9 @@ const MAX_WRITES_PER_FRAME = 50000;
 const DEFAULT_BRUSH_SIZE = 6;
 const FPS_SMOOTHING = 0.12;
 const THROTTLE_NOTICE_MS = 800;
+const PHYSICS_HZ = 30;
+const PHYSICS_INTERVAL_MS = 1000 / PHYSICS_HZ;
+const PHYSICS_STEP_SECONDS = 1 / PHYSICS_HZ;
 
 function createPaletteLookup(rawPalette) {
   if (!rawPalette) {
@@ -501,6 +504,40 @@ function handleViewportChange() {
   updateDebugOverlay();
 }
 
+let physicsHandle = null;
+function physicsTick() {
+  if (!world || Game.state.paused) {
+    return;
+  }
+
+  beginTick(world);
+  stepWorld(world);
+  endTick(world);
+
+  const stepSeconds = Number.isFinite(simulation.state?.stepSeconds)
+    ? simulation.state.stepSeconds
+    : PHYSICS_STEP_SECONDS;
+
+  simulation.state.elapsed += stepSeconds;
+}
+
+function startPhysics() {
+  if (physicsHandle !== null) {
+    return;
+  }
+
+  physicsHandle = window.setInterval(physicsTick, PHYSICS_INTERVAL_MS);
+}
+
+function stopPhysics() {
+  if (physicsHandle === null) {
+    return;
+  }
+
+  window.clearInterval(physicsHandle);
+  physicsHandle = null;
+}
+
 let frameHandle = null;
 let lastTimestamp = 0;
 
@@ -524,10 +561,6 @@ function loop(timestamp) {
     }
   }
 
-  if (!Game.state.paused) {
-    simulation.update(deltaSeconds);
-  }
-
   renderer.draw(world);
   updateDebugOverlay();
 
@@ -535,24 +568,24 @@ function loop(timestamp) {
 }
 
 function start() {
-  if (frameHandle !== null) {
-    return;
+  if (frameHandle === null) {
+    renderer.resize(world);
+    renderer.draw(world);
+    updateDebugOverlay();
+    lastTimestamp = 0;
+    frameHandle = window.requestAnimationFrame(loop);
   }
 
-  renderer.resize(world);
-  renderer.draw(world);
-  updateDebugOverlay();
-  lastTimestamp = 0;
-  frameHandle = window.requestAnimationFrame(loop);
+  startPhysics();
 }
 
 function stop() {
-  if (frameHandle === null) {
-    return;
+  if (frameHandle !== null) {
+    window.cancelAnimationFrame(frameHandle);
+    frameHandle = null;
   }
 
-  window.cancelAnimationFrame(frameHandle);
-  frameHandle = null;
+  stopPhysics();
 }
 
 function handleVisibilityChange() {
