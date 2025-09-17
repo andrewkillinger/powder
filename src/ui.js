@@ -207,6 +207,11 @@ export function initializeUI(game) {
   clearButton.className = 'ui-button clear';
   clearButton.textContent = 'Clear';
 
+  const clearRectButton = document.createElement('button');
+  clearRectButton.type = 'button';
+  clearRectButton.className = 'ui-button clear-rect';
+  clearRectButton.textContent = 'Clear Area';
+
   const brushWrapper = document.createElement('label');
   brushWrapper.className = 'ui-brush';
   brushWrapper.setAttribute('for', 'brush-size-control');
@@ -221,7 +226,15 @@ export function initializeUI(game) {
   brushInput.id = 'brush-size-control';
   brushWrapper.append(brushLabel, brushInput);
 
-  toolbar.append(chip, elementButton, pauseButton, eraserButton, clearButton, brushWrapper);
+  toolbar.append(
+    chip,
+    elementButton,
+    pauseButton,
+    eraserButton,
+    clearButton,
+    clearRectButton,
+    brushWrapper,
+  );
   document.body.appendChild(toolbar);
 
   const modal = document.createElement('div');
@@ -248,6 +261,7 @@ export function initializeUI(game) {
     pauseButton,
     eraserButton,
     clearButton,
+    clearRectButton,
     brushWrapper,
     brushInput,
     modal,
@@ -314,6 +328,12 @@ export function initializeUI(game) {
     }
   });
 
+  clearRectButton.addEventListener('click', () => {
+    if (typeof game.toggleRectClear === 'function') {
+      game.toggleRectClear();
+    }
+  });
+
   brushInput.addEventListener('input', () => {
     if (typeof game.setBrushSize === 'function') {
       game.setBrushSize(Number(brushInput.value));
@@ -358,6 +378,7 @@ export function initializeUI(game) {
     pauseButton.textContent = state.paused ? 'Resume' : 'Pause';
 
     eraserButton.classList.toggle('active', Boolean(state.erasing));
+    clearRectButton.classList.toggle('active', Boolean(state.rectClearing));
 
     if (Number(brushInput.value) !== Number(state.brushSize)) {
       brushInput.value = String(state.brushSize);
@@ -422,6 +443,7 @@ export function initializeUI(game) {
       pauseToggle: pauseButton,
       brushSize: brushInput,
       eraserToggle: eraserButton,
+      clearRectToggle: clearRectButton,
       elementButton,
     },
     isElementModalOpen() {

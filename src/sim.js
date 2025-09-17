@@ -116,6 +116,24 @@ UPDATERS[EMPTY] = function noop() {};
 
 UPDATERS[WALL] = function wallUpdater() {};
 
+export function getParticleCount(world) {
+  if (!world || !world.cells) {
+    return 0;
+  }
+
+  const cells = world.cells;
+  let count = 0;
+
+  for (let i = 0; i < cells.length; i += 1) {
+    const id = cells[i];
+    if (id !== EMPTY && !isImmovable(id)) {
+      count += 1;
+    }
+  }
+
+  return count;
+}
+
 function trySwapInternal(world, sourceIndex, targetIndex, options) {
   const cells = world.cells;
   const flags = world.flags;
@@ -576,7 +594,7 @@ export function step(world, context = {}) {
       const index = rowOffset + x;
       const elementId = cells[index];
 
-      if (elementId === EMPTY) {
+      if (elementId === EMPTY || elementId === WALL) {
         continue;
       }
 
@@ -677,6 +695,68 @@ export function paintCircle(world, x, y, radius, elementId) {
   }
 
   return changed;
+}
+
+export function fillRect(world, elementId, x0, y0, x1, y1) {
+  if (!world || !world.cells || !world.flags) {
+    return 0;
+  }
+
+  const width = Number(world.width) || 0;
+  const height = Number(world.height) || 0;
+
+  if (width <= 0 || height <= 0) {
+    return 0;
+  }
+
+  const normalizedId = Number.isFinite(elementId) ? Math.trunc(elementId) : EMPTY;
+
+  const startX = Math.trunc(Number(x0));
+  const startY = Math.trunc(Number(y0));
+  const endX = Math.trunc(Number(x1));
+  const endY = Math.trunc(Number(y1));
+
+  if (
+    !Number.isFinite(startX) ||
+    !Number.isFinite(startY) ||
+    !Number.isFinite(endX) ||
+    !Number.isFinite(endY)
+  ) {
+    return 0;
+  }
+
+  const minX = Math.max(0, Math.min(startX, endX));
+  const maxX = Math.min(width - 1, Math.max(startX, endX));
+  const minY = Math.max(0, Math.min(startY, endY));
+  const maxY = Math.min(height - 1, Math.max(startY, endY));
+
+  if (minX > maxX || minY > maxY) {
+    return 0;
+  }
+
+  const cells = world.cells;
+  const flags = world.flags;
+  const lastMoveDir = world.lastMoveDir;
+  let writes = 0;
+
+  for (let y = minY; y <= maxY; y += 1) {
+    const rowOffset = y * width;
+    for (let x = minX; x <= maxX; x += 1) {
+      const index = rowOffset + x;
+      if (cells[index] === normalizedId) {
+        continue;
+      }
+
+      cells[index] = normalizedId;
+      flags[index] = 0;
+      if (lastMoveDir) {
+        lastMoveDir[index] = 0;
+      }
+      writes += 1;
+    }
+  }
+
+  return writes;
 }
 
 export function createSimulation(options = {}) {
