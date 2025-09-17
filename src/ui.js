@@ -108,7 +108,9 @@ function createElementMenu(elements, onSelect) {
     }
     const button = document.createElement('button');
     button.type = 'button';
-    button.textContent = element.name ?? `Element ${element.id}`;
+    const label = element.name ?? `Element ${element.id}`;
+    const icon = element.icon ? `${element.icon} ` : '';
+    button.textContent = `${icon}${label}`;
     button.dataset.elementId = String(element.id);
     button.addEventListener('click', () => {
       onSelect(element.id);
@@ -232,7 +234,9 @@ export function initUI({
   function update(state) {
     const element = elements?.find((item) => item?.id === state.currentElementId);
     if (element) {
-      elementButton.textContent = `Element: ${element.name}`;
+      const label = element.name ?? `Element ${element.id}`;
+      const icon = element.icon ? `${element.icon} ` : '';
+      elementButton.textContent = `Element: ${icon}${label}`;
     }
 
     pauseButton.classList.toggle('active', Boolean(state.paused));

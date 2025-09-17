@@ -6,6 +6,8 @@ import {
   WALL,
   SAND,
   WATER,
+  OIL,
+  FIRE,
 } from './elements.js';
 import { createRenderer } from './render.js';
 import {
@@ -134,6 +136,9 @@ function clearWorld(world = Game.world) {
   world.flags.fill(0);
   if (world.lastMoveDir) {
     world.lastMoveDir.fill(0);
+  }
+  if (world.lifetimes) {
+    world.lifetimes.fill(0);
   }
   refreshParticleCount(world);
 }
@@ -366,6 +371,8 @@ export async function start() {
     WALL,
     SAND,
     WATER,
+    OIL,
+    FIRE,
   };
 
   const self = await runSelfChecksAll(Game, api);
@@ -403,7 +410,7 @@ export async function start() {
       return;
     }
     beginTick(Game.world);
-    step(Game.world, { state: Game.state });
+    step(Game.world, { state: Game.state, limits: Game.limits, metrics: Game.metrics });
     endTick(Game.world);
     Game.state.frame += 1;
   }, 1000 / PHYSICS_HZ);
