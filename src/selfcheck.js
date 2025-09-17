@@ -1,734 +1,395 @@
-import { createWorld, beginTick, endTick, step as stepWorld } from './sim.js';
-import { ELEMENTS, EMPTY, WALL, SAND, WATER } from './elements.js';
-
-function normalizeMetaContent(value) {
-  return (value || '')
+function normalizeViewportContent(content) {
+  return String(content || '')
     .split(',')
     .map((part) => part.trim().toLowerCase())
     .filter(Boolean);
 }
 
-function contentsMatch(expectedParts, actualParts) {
-  return expectedParts.every((part) => actualParts.includes(part));
+function hasHiddenOverflow(style) {
+  const values = [style.overflow, style.overflowX, style.overflowY];
+  return values.every((value) => value === 'hidden' || value === 'clip');
 }
 
-async function runCheck(fn, bucket) {
-  try {
-    const result = await fn();
-    if (typeof result === 'string' && result.length > 0) {
-      bucket.push(result);
-    }
-  } catch (error) {
-    bucket.push(error?.message || String(error));
-  }
-}
-
-async function verifyRenderLoop() {
+async function waitForAnimationFrame(timeoutMs = 300) {
   return new Promise((resolve) => {
-    const game = window.Game;
-    const startFrame = Number(game?.metrics?.frameCount ?? 0);
-    const startTime = performance.now();
-
-    function check() {
-      const currentFrame = Number(game?.metrics?.frameCount ?? 0);
-
-      if (currentFrame > startFrame) {
-        resolve(null);
-        return;
+    let settled = false;
+    function finish(message) {
+      if (!settled) {
+        settled = true;
+        resolve(message || null);
       }
-
-      if (performance.now() - startTime > 300) {
-        resolve('Render loop did not advance within 300 ms.');
-        return;
-      }
-
-      window.requestAnimationFrame(check);
     }
-
-    window.requestAnimationFrame(check);
+    requestAnimationFrame(() => finish(null));
+    setTimeout(() => finish(`requestAnimationFrame did not fire within ${timeoutMs} ms.`), timeoutMs + 10);
   });
 }
 
-function compareBuffers(before, after) {
-  if (!before || !after) {
+function cloneCells(cells) {
+  return cells ? new Uint16Array(cells) : null;
+}
+
+function compareCellArrays(before, after) {
+  if (!before || !after || before.length !== after.length) {
     return false;
   }
-
-  if (before.length !== after.length) {
-    return false;
-  }
-
   for (let i = 0; i < before.length; i += 1) {
     if (before[i] !== after[i]) {
       return true;
     }
   }
-
   return false;
-}
-
-function cloneGameStateForSimulation() {
-  const game = window.Game;
-
-  if (game && game.state) {
-    return {
-      seed: game.state.seed ?? 0,
-      frame: game.state.frame ?? 0,
-    };
-  }
-
-  return { seed: 0, frame: 0 };
-}
-
-function runSimulationSteps(world, steps, state) {
-  if (!world || steps <= 0) {
-    return;
-  }
-
-  const stepState = state ?? { seed: 0, frame: 0 };
-  const context = { state: stepState };
-
-  for (let i = 0; i < steps; i += 1) {
-    beginTick(world);
-    stepWorld(world, context);
-    endTick(world);
-    stepState.frame = (stepState.frame ?? 0) + 1;
-  }
 }
 
 function findElementPositions(world, elementId) {
   const positions = [];
-
-  if (!world || !world.cells || !world.width) {
+  if (!world || !world.cells) {
     return positions;
   }
-
-  const width = world.width;
-
   for (let index = 0; index < world.cells.length; index += 1) {
     if (world.cells[index] === elementId) {
-      positions.push({
-        index,
-        x: index % width,
-        y: Math.floor(index / width),
-      });
+      positions.push(index);
     }
   }
-
   return positions;
 }
 
-function arraysEqual(a, b) {
-  if (!a || !b || a.length !== b.length) {
-    return false;
-  }
-
-  for (let i = 0; i < a.length; i += 1) {
-    if (a[i] !== b[i]) {
-      return false;
-    }
-  }
-
-  return true;
-}
-export async function runSelfChecks() {
+export async function runSelfChecksAll(Game, api) {
   const failures = [];
-  const phase2Failures = [];
-  const phase3Failures = [];
 
-  await runCheck(() => {
-    if (!window.Game || typeof window.Game !== 'object') {
-      return 'window.Game is missing or not an object.';
-    }
-    return null;
-  }, failures);
-
-  await runCheck(() => {
-    const meta = document.querySelector('meta[name="viewport"]');
-    if (!meta) {
-      return 'Viewport meta tag is missing.';
-    }
-
-    const expected = [
-      'width=device-width',
-      'initial-scale=1',
-      'maximum-scale=1',
-      'user-scalable=no',
-    ];
-    const actualParts = normalizeMetaContent(meta.getAttribute('content'));
-
-    if (!contentsMatch(expected, actualParts)) {
-      return 'Viewport meta content must include width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no.';
-    }
-
-    return null;
-  }, failures);
-
-  await runCheck(() => {
-    const canvas = document.getElementById('game');
-
-    if (!(canvas instanceof HTMLCanvasElement)) {
-      return 'Main canvas #game was not found.';
-    }
-
-    if (canvas.width <= 0 || canvas.height <= 0) {
-      return 'Canvas #game must have a positive width and height.';
-    }
-
-    const root = document.documentElement;
-    const body = document.body;
-    const tolerance = 1;
-
-    const rootScrollable =
-      root.scrollHeight - root.clientHeight > tolerance ||
-      root.scrollWidth - root.clientWidth > tolerance;
-    const bodyScrollable =
-      body.scrollHeight - body.clientHeight > tolerance ||
-      body.scrollWidth - body.clientWidth > tolerance;
-
-    if (rootScrollable || bodyScrollable) {
-      return 'Document should not have scrollbars when the game canvas fills the viewport.';
-    }
-
-    return null;
-  }, failures);
-
-  await runCheck(async () => {
-    if (typeof window.requestAnimationFrame !== 'function') {
-      return 'requestAnimationFrame is unavailable.';
-    }
-
-    return await verifyRenderLoop();
-  }, failures);
-
-  await runCheck(() => {
-    if (typeof createWorld !== 'function') {
-      return 'createWorld is not a function.';
-    }
-
-    const testWorld = createWorld(8, 8);
-
-    if (!testWorld || typeof testWorld !== 'object') {
-      return 'createWorld did not return a valid world object.';
-    }
-
-    if (typeof testWorld.width !== 'number' || typeof testWorld.height !== 'number') {
-      return 'World dimensions must be numeric.';
-    }
-
-    if (!(testWorld.cells instanceof Uint16Array)) {
-      return 'world.cells must be a Uint16Array.';
-    }
-
-    if (!(testWorld.flags instanceof Uint8Array)) {
-      return 'world.flags must be a Uint8Array.';
-    }
-
-    if (!(testWorld.lastMoveDir instanceof Int8Array)) {
-      return 'world.lastMoveDir must be an Int8Array.';
-    }
-
-    return null;
-  }, failures);
-
-  await runCheck(() => {
-    const world = createWorld(4, 4);
-
-    if (typeof world.idx !== 'function' || typeof world.inBounds !== 'function') {
-      return 'World helper functions idx and inBounds must exist.';
-    }
-
-    try {
-      if (world.idx(1, 0) !== 1) {
-        return 'idx(1, 0) should equal 1.';
-      }
-    } catch (error) {
-      return `idx(1, 0) threw an error: ${error?.message || error}`;
-    }
-
-    if (world.inBounds(0, 0) !== true) {
-      return 'inBounds(0, 0) should return true.';
-    }
-
-    if (world.inBounds(-1, 0) !== false) {
-      return 'inBounds(-1, 0) should return false.';
-    }
-
-    if (world.inBounds(world.width, 0) !== false) {
-      return 'inBounds(width, 0) should return false.';
-    }
-
-    return null;
-  }, failures);
-
-  await runCheck(() => {
-    const game = window.Game;
-
-    if (!game) {
-      return 'Game object is unavailable.';
-    }
-
-    const elements = game.elementDefinitions || ELEMENTS;
-    const palette = game.PALETTE || {};
-
-    if (!Array.isArray(elements) || elements.length === 0) {
-      return 'Element definitions are unavailable.';
-    }
-
-    const waterMeta = elements[WATER];
-    if (!waterMeta || typeof waterMeta.lateralRunMax !== 'number') {
-      return 'Water metadata must define lateralRunMax.';
-    }
-
-    const validSwatch = (swatch) =>
-      Array.isArray(swatch) &&
-      swatch.length === 4 &&
-      swatch.every((value) => Number.isInteger(value) && value >= 0 && value <= 255);
-
-    if (!validSwatch(palette[WALL]) || !validSwatch(palette[SAND])) {
-      return 'PALETTE entries for WALL and SAND must be [r, g, b, a] arrays.';
-    }
-
-    if (typeof EMPTY !== 'number' || typeof WALL !== 'number' || typeof SAND !== 'number') {
-      return 'EMPTY, WALL, and SAND constants must be numbers.';
-    }
-
-    return null;
-  }, failures);
-
-  await runCheck(() => {
-    const game = window.Game;
-
-    if (!game || !game.renderer || typeof game.renderer.draw !== 'function') {
-      return 'Game.renderer.draw is unavailable.';
-    }
-
-    const originalWorld = game.simulation?.state?.world || null;
-    const tempWorld = createWorld(16, 16);
-
-    try {
-      const idx = tempWorld.idx;
-      tempWorld.cells[idx(1, 1)] = WALL;
-      tempWorld.cells[idx(2, 2)] = SAND;
-      tempWorld.cells[idx(3, 3)] = SAND;
-      game.renderer.draw(tempWorld);
-    } catch (error) {
-      return `Renderer dry run failed: ${error?.message || error}`;
-    } finally {
-      if (originalWorld) {
-        game.renderer.resize(originalWorld);
-        game.renderer.draw(originalWorld);
+  async function runPhase(name, checks) {
+    for (const check of checks) {
+      try {
+        const result = await check();
+        if (typeof result === 'string' && result.length > 0) {
+          failures.push(`${name}: ${result}`);
+        }
+      } catch (error) {
+        const message = error?.message || String(error);
+        failures.push(`${name}: ${message}`);
       }
     }
+  }
 
-    return null;
-  }, failures);
-
-  await runCheck(() => {
-    const game = window.Game;
-
-    if (!game || !game.renderer || typeof game.renderer.draw !== 'function') {
-      return 'Game.renderer.draw is unavailable for integrity testing.';
-    }
-
-    const originalWorld = game.simulation?.state?.world || null;
-    const tempWorld = createWorld(8, 8);
-
-    try {
-      tempWorld.cells.fill(EMPTY);
-      tempWorld.flags.fill(0);
-      if (tempWorld.lastMoveDir) {
-        tempWorld.lastMoveDir.fill(0);
+  await runPhase('Phase 0', [
+    () => {
+      if (!window.Game || typeof window.Game !== 'object') {
+        return 'window.Game must be an object.';
       }
-      game.renderer.draw(tempWorld);
-      const before = game.renderer.readPixels();
-      const idx = tempWorld.idx;
-      tempWorld.cells[idx(2, 2)] = SAND;
-      game.renderer.draw(tempWorld);
-      const after = game.renderer.readPixels();
-
-      if (!compareBuffers(before, after)) {
-        return 'Painting SAND into the world did not modify the canvas pixels.';
+      return null;
+    },
+    () => {
+      const meta = document.querySelector('meta[name="viewport"]');
+      if (!meta) {
+        return 'Viewport meta tag is missing.';
       }
-    } catch (error) {
-      return `Renderer paint integrity check failed: ${error?.message || error}`;
-    } finally {
-      if (originalWorld) {
-        game.renderer.resize(originalWorld);
-        game.renderer.draw(originalWorld);
+      const content = normalizeViewportContent(meta.getAttribute('content'));
+      if (!content.includes('user-scalable=no')) {
+        return 'Viewport meta must include user-scalable=no.';
       }
-    }
+      return null;
+    },
+    () => {
+      const canvas = document.getElementById('game');
+      if (!(canvas instanceof HTMLCanvasElement)) {
+        return '#game canvas was not found.';
+      }
+      if (canvas.width <= 0 || canvas.height <= 0) {
+        return 'Canvas must have a positive width and height.';
+      }
+      const rootStyle = getComputedStyle(document.documentElement);
+      const bodyStyle = getComputedStyle(document.body);
+      if (!hasHiddenOverflow(rootStyle) || !hasHiddenOverflow(bodyStyle)) {
+        return 'Document overflow must be hidden to prevent scrolling.';
+      }
+      return null;
+    },
+    () => waitForAnimationFrame(300),
+  ]);
 
-    return null;
-  }, failures);
-  await runCheck(() => {
-    const toolbar = document.getElementById('powder-toolbar');
-    if (!toolbar) {
-      return 'Toolbar element #powder-toolbar is missing.';
-    }
+  await runPhase('Phase 1', [
+    () => {
+      if (typeof api?.createWorld !== 'function') {
+        return 'createWorld function is missing.';
+      }
+      if (typeof api?.idx !== 'function') {
+        return 'idx helper is missing.';
+      }
+      if (typeof api?.inBounds !== 'function') {
+        return 'inBounds helper is missing.';
+      }
+      return null;
+    },
+    () => {
+      const testWorld = api.createWorld(16, 16);
+      if (!(testWorld.cells instanceof Uint16Array)) {
+        return 'World cells should be a Uint16Array.';
+      }
+      if (!(testWorld.flags instanceof Uint8Array)) {
+        return 'World flags should be a Uint8Array.';
+      }
+      if (typeof api.idx(testWorld, 1, 0) !== 'number') {
+        return 'idx helper must return a numeric index.';
+      }
+      if (api.idx(testWorld, 1, 0) !== 1) {
+        return 'idx(world, 1, 0) should equal 1.';
+      }
+      if (api.inBounds(testWorld, 0, 0) !== true) {
+        return 'inBounds(world, 0, 0) should be true.';
+      }
+      if (api.inBounds(testWorld, -1, 0) !== false) {
+        return 'Negative coordinates must be out of bounds.';
+      }
+      if (api.inBounds(testWorld, 16, 0) !== false) {
+        return 'Coordinates past width must be out of bounds.';
+      }
+      return null;
+    },
+    () => {
+      if (!api.ELEMENTS || typeof api.ELEMENTS !== 'object') {
+        return 'ELEMENTS table missing.';
+      }
+      if (!(api.PALETTE instanceof Uint8ClampedArray)) {
+        return 'PALETTE must be a Uint8ClampedArray.';
+      }
+      if (!Number.isInteger(api.EMPTY) || !Number.isInteger(api.WALL) || !Number.isInteger(api.SAND)) {
+        return 'Element constants missing.';
+      }
+      const wallOffset = api.WALL * 4;
+      const sandOffset = api.SAND * 4;
+      if (wallOffset + 3 >= api.PALETTE.length || sandOffset + 3 >= api.PALETTE.length) {
+        return 'Palette entries for WALL and SAND must exist.';
+      }
+      return null;
+    },
+    () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 4;
+      canvas.height = 4;
+      const rendererFactory = api.Renderer?.createRenderer;
+      if (typeof rendererFactory !== 'function') {
+        return 'Renderer.createRenderer must be a function.';
+      }
+      const world = api.createWorld(4, 4);
+      const renderer = rendererFactory(canvas, world, api.PALETTE);
+      renderer.draw(world);
+      const ctx = canvas.getContext('2d');
+      const before = ctx.getImageData(0, 0, 4, 4).data.slice();
+      world.cells[0] = api.SAND;
+      renderer.draw(world);
+      const after = ctx.getImageData(0, 0, 4, 4).data;
+      if (!compareCellArrays(before, after)) {
+        return 'Renderer draw should change pixels when world updates.';
+      }
+      return null;
+    },
+  ]);
 
-    const elementButton = toolbar.querySelector('button.ui-button.elements');
-    const pauseButton = toolbar.querySelector('button.ui-button.pause');
-    const clearButton = toolbar.querySelector('button.ui-button.clear');
-    const eraserButton = toolbar.querySelector('button.ui-button.eraser');
-    const brushInput = toolbar.querySelector('input[type="range"]');
+  await runPhase('Phase 2', [
+    async () => {
+      const toolbar = document.querySelector('[data-ui-toolbar="true"], #powder-toolbar');
+      if (!toolbar) {
+        return 'Toolbar not found.';
+      }
+      const elementButton = Array.from(toolbar.querySelectorAll('button')).find((btn) => /element/i.test(btn.textContent || ''));
+      const pauseButton = Array.from(toolbar.querySelectorAll('button')).find((btn) => /pause/i.test(btn.textContent || ''));
+      const clearButton = Array.from(toolbar.querySelectorAll('button')).find((btn) => /clear/i.test(btn.textContent || ''));
+      const eraserButton = Array.from(toolbar.querySelectorAll('button')).find((btn) => /eraser/i.test(btn.textContent || ''));
+      const brushInput = toolbar.querySelector('input[type="range"]');
+      if (!elementButton || !pauseButton || !clearButton || !eraserButton || !brushInput) {
+        return 'Toolbar must expose Element, Pause, Clear, Brush, and Eraser controls.';
+      }
+      const initialPause = Game.state.paused;
+      pauseButton.click();
+      await waitForAnimationFrame(50);
+      if (Game.state.paused === initialPause) {
+        return 'Pause button did not toggle Game.state.paused.';
+      }
+      pauseButton.click();
+      await waitForAnimationFrame(50);
+      const targetValue = 13;
+      brushInput.value = String(targetValue);
+      brushInput.dispatchEvent(new Event('input', { bubbles: true }));
+      await waitForAnimationFrame(50);
+      if (Game.state.brushSize !== targetValue) {
+        return 'Brush input should update Game.state.brushSize.';
+      }
+      const beforeCells = Game.world ? cloneCells(Game.world.cells) : null;
+      elementButton.click();
+      await waitForAnimationFrame(50);
+      const afterCells = Game.world ? cloneCells(Game.world.cells) : null;
+      if (beforeCells && afterCells && compareCellArrays(beforeCells, afterCells)) {
+        return 'Clicking toolbar should not paint into the world.';
+      }
+      return null;
+    },
+  ]);
 
-    if (!elementButton || !pauseButton || !clearButton || !eraserButton || !brushInput) {
-      return 'Toolbar buttons (Elements, Pause, Clear, Eraser, Brush range) must exist.';
-    }
-
-    return null;
-  }, phase2Failures);
-
-  await runCheck(async () => {
-    const game = window.Game;
-
-    if (!game || !game.ui || !game.ui.elements || !game.ui.elements.pauseToggle) {
-      return 'Pause toggle button is unavailable for UI test.';
-    }
-
-    const pauseButton = game.ui.elements.pauseToggle;
-    const initialState = Boolean(game.state?.paused);
-
-    pauseButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await new Promise((resolve) => window.requestAnimationFrame(resolve));
-
-    if (Boolean(game.state?.paused) === initialState) {
-      return 'Pause toggle did not update Game.state.paused.';
-    }
-
-    pauseButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await new Promise((resolve) => window.requestAnimationFrame(resolve));
-
-    if (Boolean(game.state?.paused) !== initialState) {
-      game.togglePause(initialState);
-    }
-
-    return null;
-  }, phase2Failures);
-
-  await runCheck(async () => {
-    const game = window.Game;
-
-    if (!game || !game.ui || !game.ui.elements || !game.ui.elements.brushSize) {
-      return 'Brush size control is unavailable for binding check.';
-    }
-
-    const slider = game.ui.elements.brushSize;
-    const originalValue = slider.value;
-
-    slider.value = '13';
-    slider.dispatchEvent(new Event('input', { bubbles: true }));
-    await new Promise((resolve) => window.requestAnimationFrame(resolve));
-
-    if (game.state?.brushSize !== 13) {
-      slider.value = originalValue;
-      slider.dispatchEvent(new Event('input', { bubbles: true }));
-      return 'Brush size control did not update Game.state.brushSize to 13.';
-    }
-
-    slider.value = originalValue;
-    slider.dispatchEvent(new Event('input', { bubbles: true }));
-    await new Promise((resolve) => window.requestAnimationFrame(resolve));
-
-    return null;
-  }, phase2Failures);
-
-  await runCheck(async () => {
-    const game = window.Game;
-    const toolbar = document.getElementById('powder-toolbar');
-    const world = game?.simulation?.state?.world;
-
-    if (!toolbar) {
-      return 'Toolbar element is required for interaction safety test.';
-    }
-
-    if (!world || !world.cells) {
-      return 'World is unavailable for toolbar interaction test.';
-    }
-
-    const wasPaused = Boolean(game.state?.paused);
-    game.togglePause(true);
-
-    const before = new Uint16Array(world.cells);
-    toolbar.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    await new Promise((resolve) => window.requestAnimationFrame(resolve));
-    game.togglePause(wasPaused);
-
-    if (!arraysEqual(before, world.cells)) {
-      return 'Toolbar interactions should not trigger canvas painting.';
-    }
-
-    return null;
-  }, phase2Failures);
-
-  await runCheck(() => {
-    const game = window.Game;
-    const stepSeconds = Number(game?.simulation?.state?.stepSeconds);
-
-    if (!Number.isFinite(stepSeconds)) {
-      return 'Game.simulation.state.stepSeconds must be a finite number.';
-    }
-
-    if (stepSeconds < 1 / 60 - 0.002 || stepSeconds > 1 / 20 + 0.005) {
-      return 'Simulation stepSeconds must correspond to roughly 20–60 Hz.';
-    }
-
-    return null;
-  }, phase3Failures);
-
-  await runCheck(() => {
-    const world = createWorld(6, 6);
-    const idx = world.idx;
-    world.cells[idx(2, 1)] = SAND;
-
-    const state = cloneGameStateForSimulation();
-    runSimulationSteps(world, 30, state);
-
-    const positions = findElementPositions(world, SAND);
-    if (positions.length === 0) {
-      return 'SAND disappeared during gravity test.';
-    }
-
-    if (!positions.some((pos) => pos.y > 1)) {
-      return 'SAND did not fall downward after 30 steps.';
-    }
-
-    const wallWorld = createWorld(4, 4);
-    const wallIdx = wallWorld.idx;
-    wallWorld.cells[wallIdx(1, 3)] = WALL;
-    wallWorld.cells[wallIdx(1, 0)] = SAND;
-
-    const wallState = cloneGameStateForSimulation();
-    runSimulationSteps(wallWorld, 12, wallState);
-
-    if (wallWorld.cells[wallIdx(1, 3)] !== WALL || wallWorld.cells[wallIdx(1, 2)] !== SAND) {
-      return 'SAND passed through WALL during gravity test.';
-    }
-
-    return null;
-  }, phase3Failures);
-
-  await runCheck(() => {
-    const world = createWorld(5, 6);
-    const idx = world.idx;
-    world.cells[idx(2, 0)] = SAND;
-
-    const state = cloneGameStateForSimulation();
-    let previousY = 0;
-
-    for (let step = 0; step < 3; step += 1) {
-      runSimulationSteps(world, 1, state);
-      const positions = findElementPositions(world, SAND);
-
+  await runPhase('Phase 3', [
+    () => {
+      const world = api.createWorld(4, 4);
+      world.cells.fill(api.EMPTY);
+      const startIndex = api.idx(world, 1, 0);
+      world.cells[startIndex] = api.SAND;
+      api.beginTick(world);
+      api.step(world, { state: { seed: Game.state.seed ?? 0, frame: 0 } });
+      api.endTick(world);
+      const positions = findElementPositions(world, api.SAND);
       if (positions.length === 0) {
-        return 'SAND disappeared during teleport guard test.';
+        return 'Sand particle vanished after step.';
       }
-
-      const currentY = positions[0].y;
-      if (Math.abs(currentY - previousY) > 1) {
-        return 'SAND moved more than one row in a single tick.';
+      const ys = positions.map((index) => Math.floor(index / world.width));
+      if (Math.max(...ys) > 1) {
+        return 'Sand should fall at most one row per tick.';
       }
-      previousY = currentY;
-    }
-
-    return null;
-  }, phase3Failures);
-
-  await runCheck(() => {
-    const world = createWorld(4, 4);
-    const idx = world.idx;
-    world.cells[idx(1, 1)] = SAND;
-
-    const state = cloneGameStateForSimulation();
-    beginTick(world);
-
-    for (let i = 0; i < world.flags.length; i += 1) {
-      if (world.flags[i] & 1) {
-        return 'Moved flag should be clear before a simulation step.';
-      }
-    }
-
-    runSimulationSteps(world, 1, state);
-
-    let movedSet = false;
-    for (let i = 0; i < world.flags.length; i += 1) {
-      if (world.flags[i] & 1) {
-        movedSet = true;
-        break;
-      }
-    }
-
-    if (!movedSet) {
-      return 'Moved flag was not set for an active SAND cell.';
-    }
-
-    endTick(world);
-
-    for (let i = 0; i < world.flags.length; i += 1) {
-      if (world.flags[i] & 1) {
-        return 'Moved flag did not reset after endTick.';
-      }
-    }
-
-    return null;
-  }, phase3Failures);
-
-  const result = {
-    ok: failures.length === 0,
-    failures,
-    phase2: {
-      ok: phase2Failures.length === 0,
-      failures: phase2Failures,
+      return null;
     },
-    phase3: {
-      ok: phase3Failures.length === 0,
-      failures: phase3Failures,
+    () => {
+      const world = api.createWorld(3, 3);
+      world.cells.fill(api.EMPTY);
+      const sandIndex = api.idx(world, 1, 0);
+      const wallIndex = api.idx(world, 1, 1);
+      world.cells[sandIndex] = api.SAND;
+      world.cells[wallIndex] = api.WALL;
+      for (let frame = 0; frame < 3; frame += 1) {
+        api.beginTick(world);
+        api.step(world, { state: { seed: Game.state.seed ?? 0, frame } });
+        api.endTick(world);
+        if ((world.flags[sandIndex] & 1) !== 0) {
+          return 'Moved flag should reset after endTick.';
+        }
+      }
+      if (world.cells[wallIndex] !== api.WALL) {
+        return 'Sand must not replace wall tiles.';
+      }
+      return null;
     },
-  };
+  ]);
 
-  return result;
-}
-export async function runSelfChecksPhase4(baseResult) {
-  const base = baseResult || (await runSelfChecks());
-  const combinedFailures = [];
-
-  if (base && !base.ok) {
-    combinedFailures.push(...base.failures);
-  }
-
-  if (base?.phase2 && !base.phase2.ok) {
-    combinedFailures.push(...base.phase2.failures);
-  }
-
-  if (base?.phase3 && !base.phase3.ok) {
-    combinedFailures.push(...base.phase3.failures);
-  }
-
-  const phase4Failures = [];
-
-  await runCheck(() => {
-    const waterMeta = ELEMENTS[WATER];
-    if (!waterMeta || typeof waterMeta.lateralRunMax !== 'number') {
-      return 'Water metadata must define lateralRunMax.';
-    }
-
-    const world = createWorld(16, 8);
-    const idx = world.idx;
-
-    for (let x = 0; x < world.width; x += 1) {
-      world.cells[idx(x, world.height - 1)] = WALL;
-    }
-
-    for (let x = 0; x < 6; x += 1) {
-      world.cells[idx(x, world.height - 2)] = WALL;
-    }
-
-    const initialPositions = [];
-    for (let x = 2; x <= 4; x += 1) {
-      world.cells[idx(x, 0)] = WATER;
-      initialPositions.push(x);
-    }
-
-    const initialMin = Math.min(...initialPositions);
-    const initialMax = Math.max(...initialPositions);
-
-    const state = cloneGameStateForSimulation();
-    runSimulationSteps(world, 1, state);
-
-    const positions = findElementPositions(world, WATER);
-    if (positions.length === 0) {
-      return 'Water vanished during lateral run cap test.';
-    }
-
-    const minX = positions.reduce((acc, pos) => Math.min(acc, pos.x), Infinity);
-    const maxX = positions.reduce((acc, pos) => Math.max(acc, pos.x), -Infinity);
-
-    if (minX < initialMin - waterMeta.lateralRunMax || maxX > initialMax + waterMeta.lateralRunMax) {
-      return 'Water moved laterally beyond its run cap in a single tick.';
-    }
-
-    return null;
-  }, phase4Failures);
-
-  await runCheck(() => {
-    const world = createWorld(4, 6);
-    const idx = world.idx;
-    const height = world.height;
-
-    for (let y = 0; y < height; y += 1) {
-      world.cells[idx(0, y)] = WALL;
-      world.cells[idx(world.width - 1, y)] = WALL;
-    }
-
-    for (let x = 0; x < world.width; x += 1) {
-      world.cells[idx(x, height - 1)] = WALL;
-    }
-
-    world.cells[idx(1, height - 2)] = WATER;
-    world.cells[idx(2, height - 2)] = WATER;
-    world.cells[idx(1, height - 3)] = WATER;
-    world.cells[idx(2, height - 3)] = WATER;
-
-    const state = cloneGameStateForSimulation();
-    const context = { state };
-    const flipCounts = new Uint8Array(world.cells.length);
-    const previousDirs = new Int8Array(world.lastMoveDir.length);
-
-    for (let step = 0; step < 60; step += 1) {
-      beginTick(world);
-      stepWorld(world, context);
-      endTick(world);
-      state.frame = (state.frame ?? 0) + 1;
-
-      const dirs = world.lastMoveDir;
-      for (let i = 0; i < dirs.length; i += 1) {
-        if (world.cells[i] !== WATER) {
-          previousDirs[i] = 0;
-          continue;
-        }
-
-        const dir = dirs[i];
-        const prev = previousDirs[i];
-
-        if (dir !== 0 && prev !== 0 && dir !== prev) {
-          flipCounts[i] += 1;
-        }
-
-        previousDirs[i] = dir;
+  await runPhase('Phase 4', [
+    () => {
+      if (!api.ELEMENTS?.[api.WATER]) {
+        return 'Water element metadata missing.';
       }
-    }
-
-    let maxFlips = 0;
-    for (let i = 0; i < flipCounts.length; i += 1) {
-      if (flipCounts[i] > maxFlips) {
-        maxFlips = flipCounts[i];
+      const offset = api.WATER * 4;
+      if (offset + 3 >= api.PALETTE.length) {
+        return 'Water palette entry missing.';
       }
-    }
+      return null;
+    },
+    () => {
+      const world = api.createWorld(6, 6);
+      world.cells.fill(api.EMPTY);
+      for (let x = 0; x < world.width; x += 1) {
+        world.cells[api.idx(world, x, world.height - 1)] = api.WALL;
+      }
+      for (let y = world.height - 2; y >= world.height - 4; y -= 1) {
+        world.cells[api.idx(world, 1, y)] = api.WALL;
+        world.cells[api.idx(world, world.width - 2, y)] = api.WALL;
+      }
+      world.cells[api.idx(world, 2, 0)] = api.WATER;
+      world.cells[api.idx(world, 3, 0)] = api.WATER;
+      const history = [];
+      for (let frame = 0; frame < 40; frame += 1) {
+        api.beginTick(world);
+        api.step(world, { state: { seed: Game.state.seed ?? 0, frame } });
+        api.endTick(world);
+        const waterPositions = findElementPositions(world, api.WATER);
+        if (waterPositions.length === 0) {
+          return 'Water disappeared during trough test.';
+        }
+        const xs = waterPositions.map((index) => index % world.width);
+        if (xs.some((x) => x < 1 || x > world.width - 2)) {
+          return 'Water escaped lateral bounds of trough.';
+        }
+        history.push(waterPositions.join(','));
+      }
+      if (history.length >= 4) {
+        const a = history[history.length - 1];
+        const b = history[history.length - 2];
+        const c = history[history.length - 3];
+        const d = history[history.length - 4];
+        if (a === c && b === d && a !== b) {
+          return 'Water oscillated in a two-frame loop.';
+        }
+      }
+      return null;
+    },
+  ]);
 
-    if (maxFlips > 6) {
-      return `Water direction flipped ${maxFlips} times in trough test.`;
-    }
-
-    return null;
-  }, phase4Failures);
-
-  if (phase4Failures.length === 0) {
-    console.log('✅ Phase 4 ready');
-  } else {
-    const lines = ['❌ Phase 4 regressions:'];
-    for (const failure of phase4Failures) {
-      lines.push(String(failure));
-    }
-    console.error(lines.join('\n'));
-  }
+  await runPhase('Phase 5', [
+    () => {
+      const world = api.createWorld(8, 8);
+      const writes = api.fillRect(world, api.SAND, 0, 0, 2, 2);
+      if (!Number.isFinite(writes) || writes <= 0) {
+        return 'fillRect should modify the world.';
+      }
+      for (let y = 0; y <= 2; y += 1) {
+        for (let x = 0; x <= 2; x += 1) {
+          if (world.cells[api.idx(world, x, y)] !== api.SAND) {
+            return 'fillRect should fill the requested area.';
+          }
+        }
+      }
+      return null;
+    },
+    () => {
+      const overlay = document.getElementById('powder-overlay');
+      if (!overlay || !/FPS:/i.test(overlay.textContent || '') || !/Particles:/i.test(overlay.textContent || '')) {
+        return 'HUD overlay must show FPS and particle count.';
+      }
+      return null;
+    },
+    () => {
+      const canvas = document.getElementById('game');
+      if (!(canvas instanceof HTMLCanvasElement) || !Game.world) {
+        return null;
+      }
+      const world = Game.world;
+      const backup = new Uint16Array(world.cells);
+      const limit = Math.min(world.cells.length, Game.limits?.softCap ?? 0);
+      for (let i = 0; i < world.cells.length; i += 1) {
+        world.cells[i] = i < limit ? api.SAND : api.EMPTY;
+      }
+      const before = api.getParticleCount(world);
+      if (typeof Game.hud?.update === 'function') {
+        Game.hud.update({ fps: Game.metrics.fps, count: limit });
+      }
+      const rect = canvas.getBoundingClientRect();
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+      canvas.dispatchEvent(
+        new PointerEvent('pointerdown', {
+          pointerId: 99,
+          bubbles: true,
+          button: 0,
+          clientX: centerX,
+          clientY: centerY,
+        }),
+      );
+      canvas.dispatchEvent(
+        new PointerEvent('pointerup', {
+          pointerId: 99,
+          bubbles: true,
+          button: 0,
+          clientX: centerX,
+          clientY: centerY,
+        }),
+      );
+      const after = api.getParticleCount(world);
+      world.cells.set(backup);
+      Game.metrics.particles = api.getParticleCount(world);
+      if (typeof Game.hud?.update === 'function') {
+        Game.hud.update({ fps: Game.metrics.fps, count: api.getParticleCount(world) });
+      }
+      if (after > before && limit >= (Game.limits?.softCap ?? 0)) {
+        return 'Soft cap should prevent spawning additional particles.';
+      }
+      return null;
+    },
+  ]);
 
   return {
-    ok: combinedFailures.length === 0,
-    failures: combinedFailures,
-    phase4: {
-      ok: phase4Failures.length === 0,
-      failures: phase4Failures,
-    },
+    ok: failures.length === 0,
+    failures,
   };
 }

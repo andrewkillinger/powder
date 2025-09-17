@@ -3,13 +3,6 @@ export const WALL = 1;
 export const SAND = 2;
 export const WATER = 3;
 
-export const ELEMENT_IDS = Object.freeze({
-  EMPTY,
-  WALL,
-  SAND,
-  WATER,
-});
-
 export const ELEMENTS = [];
 
 ELEMENTS[EMPTY] = Object.freeze({
@@ -56,10 +49,12 @@ ELEMENTS[WATER] = Object.freeze({
   buoyancy: 1,
 });
 
-ELEMENTS.EMPTY = EMPTY;
-ELEMENTS.WALL = WALL;
-ELEMENTS.SAND = SAND;
-ELEMENTS.WATER = WATER;
+export const ELEMENT_IDS = Object.freeze({
+  EMPTY,
+  WALL,
+  SAND,
+  WATER,
+});
 
 export const PALETTE = new Uint8ClampedArray([
   // EMPTY
@@ -72,18 +67,9 @@ export const PALETTE = new Uint8ClampedArray([
   64, 128, 255, 255,
 ]);
 
-export function createGameElements() {
-  const canvas = document.getElementById('game-canvas');
-
-  if (!canvas) {
-    throw new Error('Expected #game-canvas element to exist.');
-  }
-
-  const context = canvas.getContext('2d');
-
-  if (!context) {
-    throw new Error('2D rendering context is unavailable.');
-  }
-
-  return { canvas, context };
-}
+export const ELEMENT_LIST = Object.freeze([
+  ELEMENTS[EMPTY],
+  ELEMENTS[WALL],
+  ELEMENTS[SAND],
+  ELEMENTS[WATER],
+]);
