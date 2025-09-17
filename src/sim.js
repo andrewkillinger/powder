@@ -646,6 +646,37 @@ function updateOil(world, x, y) {
   const parity = currentStep.frameParity;
   const previousDir = world.lastMoveDir ? world.lastMoveDir[index] : 0;
 
+  const combustion = metadata.combustion || {};
+  const igniteChance = clamp01(
+    Number.isFinite(combustion.igniteProbability) ? combustion.igniteProbability : 0,
+  );
+  const igniteProduct = Number.isFinite(combustion.product) ? combustion.product : FIRE;
+  if (igniteChance > 0 && ELEMENTS[igniteProduct]) {
+    const igniteNeighbors = [
+      { dx: -1, dy: 0 },
+      { dx: 1, dy: 0 },
+      { dx: 0, dy: -1 },
+      { dx: 0, dy: 1 },
+      { dx: -1, dy: -1 },
+      { dx: 1, dy: -1 },
+      { dx: -1, dy: 1 },
+      { dx: 1, dy: 1 },
+    ];
+    for (let i = 0; i < igniteNeighbors.length; i += 1) {
+      const nx = x + igniteNeighbors[i].dx;
+      const ny = y + igniteNeighbors[i].dy;
+      if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
+        continue;
+      }
+      const neighborIndex = ny * width + nx;
+      if (world.cells[neighborIndex] === FIRE && randomChance(igniteChance)) {
+        if (igniteCellAt(world, index, igniteProduct)) {
+          return;
+        }
+      }
+    }
+  }
+
   const belowY = y + 1;
   if (belowY < height) {
     const belowIndex = index + width;
@@ -1185,6 +1216,7 @@ export function fillRect(world, elementId, x0, y0, x1, y1) {
   const cells = world.cells;
   const flags = world.flags;
   const lastMoveDir = world.lastMoveDir;
+  const lifetimes = world.lifetimes;
   let writes = 0;
 
   for (let y = minY; y <= maxY; y += 1) {
