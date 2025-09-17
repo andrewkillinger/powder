@@ -1,15 +1,25 @@
 import {
   createGameElements,
-  ELEMENTS,
+  ELEMENTS as ELEMENT_DEFS,
+  ELEMENT_IDS,
   PALETTE as RAW_PALETTE,
   EMPTY,
   WALL,
   SAND,
+  WATER,
 } from './elements.js';
 import { createRenderer } from './render.js';
-import { createSimulation, paintCircle, beginTick, endTick, step as stepWorld } from './sim.js';
+import {
+  createSimulation,
+  paintCircle,
+  beginTick,
+  endTick,
+  step as stepWorld,
+  setSimulationSeed,
+  runWaterOverSandTest,
+} from './sim.js';
 import { initializeUI } from './ui.js';
-import { runSelfChecks } from './selfcheck.js';
+import { runSelfChecks, runSelfChecksPhase4 } from './selfcheck.js';
 
 const MAX_WRITES_PER_FRAME = 50000;
 const DEFAULT_BRUSH_SIZE = 6;
@@ -43,9 +53,27 @@ function createPaletteLookup(rawPalette) {
 function createElementNameMap() {
   const names = {};
 
-  for (const [name, id] of Object.entries(ELEMENTS)) {
-    const label = name.charAt(0) + name.slice(1).toLowerCase();
-    names[id] = label;
+  if (Array.isArray(ELEMENT_DEFS)) {
+    for (const definition of ELEMENT_DEFS) {
+      if (!definition || typeof definition.id !== 'number') {
+        continue;
+      }
+
+      if (typeof definition.name === 'string' && definition.name.length > 0) {
+        names[definition.id] = definition.name;
+      }
+    }
+  }
+
+  for (const [name, id] of Object.entries(ELEMENT_IDS)) {
+    if (typeof id !== 'number' || id < 0) {
+      continue;
+    }
+
+    if (!names[id]) {
+      const label = name.charAt(0) + name.slice(1).toLowerCase();
+      names[id] = label;
+    }
   }
 
   return names;
@@ -124,6 +152,9 @@ if (elements.canvas && elements.canvas.id !== 'game') {
 elements.names = elementNames;
 
 const simulation = createSimulation();
+const initialSeed = setSimulationSeed(Math.floor(Math.random() * 0xffffffff));
+simulation.state.seed = initialSeed;
+simulation.state.frame = 0;
 const renderer = createRenderer(elements.canvas, elements.context, {
   palette: RAW_PALETTE,
   getToolbarHeight: () => layout.toolbarHeight,
@@ -140,8 +171,10 @@ const Game = {
   state: {
     paused: false,
     brushSize: DEFAULT_BRUSH_SIZE,
-    currentElementId: ELEMENTS.SAND,
+    currentElementId: SAND,
     erasing: false,
+    frame: 0,
+    seed: initialSeed,
   },
   metrics: {
     frameCount: 0,
@@ -149,9 +182,10 @@ const Game = {
   },
 };
 
-Game.ELEMENTS = ELEMENTS;
+Game.ELEMENTS = ELEMENT_IDS;
+Game.elementDefinitions = ELEMENT_DEFS;
 Game.PALETTE = paletteLookup;
-Game.constants = { EMPTY, WALL, SAND };
+Game.constants = { EMPTY, WALL, SAND, WATER };
 Game.getElementName = function getElementName(elementId) {
   return elementNames[elementId] ?? `Element ${elementId}`;
 };
@@ -160,6 +194,7 @@ window.PALETTE = paletteLookup;
 window.EMPTY = EMPTY;
 window.WALL = WALL;
 window.SAND = SAND;
+window.WATER = WATER;
 
 function notifyStateChange() {
   for (const listener of stateListeners) {
@@ -205,10 +240,16 @@ Game.setCurrentElementId = function setCurrentElementId(elementId) {
 
   const id = Math.max(0, Math.trunc(numeric));
 
+  if (!ELEMENT_DEFS[id] && id !== EMPTY) {
+    return Game.state.currentElementId;
+  }
+
   if (id !== Game.state.currentElementId) {
     Game.state.currentElementId = id;
     notifyStateChange();
   }
+
+  return Game.state.currentElementId;
 };
 
 Game.togglePause = function togglePause(forceValue) {
@@ -231,9 +272,26 @@ Game.toggleEraser = function toggleEraser(forceValue) {
   }
 };
 
+Game.setSeed = function setSeed(seed) {
+  const normalized = setSimulationSeed(seed);
+
+  if (Game.state.seed !== normalized) {
+    Game.state.seed = normalized;
+    notifyStateChange();
+  } else {
+    Game.state.seed = normalized;
+  }
+
+  simulation.state.seed = normalized;
+  return normalized;
+};
+
 Game.clearWorld = function clearWorld() {
   world.cells.fill(EMPTY);
   world.flags.fill(0);
+  if (world.lastMoveDir) {
+    world.lastMoveDir.fill(0);
+  }
   renderer.draw(world);
 };
 
@@ -511,8 +569,11 @@ function physicsTick() {
   }
 
   beginTick(world);
-  stepWorld(world);
+  stepWorld(world, Game.state);
   endTick(world);
+
+  Game.state.frame += 1;
+  simulation.state.frame = (simulation.state.frame || 0) + 1;
 
   const stepSeconds = Number.isFinite(simulation.state?.stepSeconds)
     ? simulation.state.stepSeconds
@@ -671,39 +732,44 @@ updateDebugOverlay();
 start();
 
 Promise.resolve(runSelfChecks())
-  .then((result) => {
-    if (!result || typeof result !== 'object') {
-      console.error('❌ Phase 0–1 checks failed: Self-check did not return a result');
+  .then((baseResult) => Promise.all([baseResult, runSelfChecksPhase4(baseResult)]))
+  .then(([baseResult, phase4Result]) => {
+    if (!baseResult || typeof baseResult !== 'object') {
+      console.error('❌ Phase 0–3 checks failed: Self-check did not return a result');
       return;
     }
 
-    if (result.ok) {
-      console.log('✅ Phase 0–1 checks passed');
+    const baseIssues = [];
+    if (Array.isArray(baseResult.failures)) {
+      baseIssues.push(...baseResult.failures);
+    }
+    if (Array.isArray(baseResult.phase2?.failures)) {
+      baseIssues.push(...baseResult.phase2.failures);
+    }
+    if (Array.isArray(baseResult.phase3?.failures)) {
+      baseIssues.push(...baseResult.phase3.failures);
+    }
+
+    if (baseIssues.length === 0) {
+      console.log('✅ Phase 0–3 checks passed');
     } else {
-      const lines = ['❌ Phase 0–1 checks failed:'];
-      for (const failure of result.failures) {
+      const lines = ['❌ Phase 0–3 checks failed:'];
+      for (const failure of baseIssues) {
         lines.push(String(failure));
       }
       console.error(lines.join('\n'));
     }
 
-    if (result.phase2) {
-      if (result.ok && result.phase2.ok) {
-        console.log('✅ Phase 2 ready');
-      } else {
-        const lines = ['❌ Phase 2 regressions:'];
-        const issues = result.phase2.failures && result.phase2.failures.length
-          ? result.phase2.failures
-          : ['Unknown regression'];
-        for (const failure of issues) {
-          lines.push(String(failure));
-        }
-        console.error(lines.join('\n'));
-      }
+    if (!phase4Result || typeof phase4Result !== 'object') {
+      console.error('❌ Phase 4 regressions: Self-check did not return a result');
     }
+
+    console.info(
+      'Modified: src/elements.js, src/sim.js, src/main.js, src/selfcheck.js — reload or rerun self-checks via console to validate.',
+    );
   })
   .catch((error) => {
-    console.error('❌ Phase 0–1 checks failed:', error);
+    console.error('❌ Phase 0–3 checks failed:', error);
   });
 
 function installQC() {
@@ -750,6 +816,33 @@ function installQC() {
     toggleEraser() {
       Game.toggleEraser();
       return Game.state.erasing;
+    },
+    setSeed(seed) {
+      return Game.setSeed(seed);
+    },
+    testWaterOverSand() {
+      const testWorld = Game.simulation?.state?.world;
+
+      if (!testWorld) {
+        return null;
+      }
+
+      const wasPaused = Boolean(Game.state.paused);
+      Game.togglePause(true);
+
+      const stats = runWaterOverSandTest(testWorld, {
+        seed: Game.state.seed,
+        frame: Game.state.frame,
+      });
+
+      renderer.draw(testWorld);
+      updateDebugOverlay();
+
+      if (!wasPaused) {
+        Game.togglePause(false);
+      }
+
+      return stats;
     },
   };
 
