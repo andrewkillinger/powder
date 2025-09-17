@@ -536,6 +536,20 @@ export function createWorld(width, height) {
   };
 }
 
+export function idx(world, x, y) {
+  if (!world || typeof world.idx !== 'function') {
+    throw new TypeError('idx(world, x, y) requires a world with an idx method.');
+  }
+  return world.idx(x, y);
+}
+
+export function inBounds(world, x, y) {
+  if (!world || typeof world.inBounds !== 'function') {
+    return false;
+  }
+  return Boolean(world.inBounds(x, y));
+}
+
 export function beginTick(world) {
   if (!world || !world.flags) {
     return;

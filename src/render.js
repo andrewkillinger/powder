@@ -1,160 +1,117 @@
-import { PALETTE } from './elements.js';
-
-function getViewportSize(canvas, toolbarHeight = 0) {
-  const viewport = window.visualViewport;
-
-  if (viewport) {
-    return {
-      width: Math.max(Math.round(viewport.width), 1),
-      height: Math.max(Math.round(viewport.height - toolbarHeight), 1),
-    };
+export function createRenderer(canvas, world, palette) {
+  if (!(canvas instanceof HTMLCanvasElement)) {
+    throw new TypeError('createRenderer expects a canvas element.');
   }
 
-  const root = document.documentElement;
-  const width =
-    root.clientWidth || window.innerWidth || canvas.clientWidth || canvas.width || 1;
-  const height =
-    root.clientHeight || window.innerHeight || canvas.clientHeight || canvas.height || 1;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    throw new Error('2D rendering context unavailable.');
+  }
 
-  return {
-    width: Math.max(Math.round(width), 1),
-    height: Math.max(Math.round(height - toolbarHeight), 1),
-  };
-}
-
-export function createRenderer(canvas, context, options = {}) {
-  const palette = options.palette ?? PALETTE;
-  const getToolbarHeight = typeof options.getToolbarHeight === 'function'
-    ? options.getToolbarHeight
-    : () => 0;
-
+  let currentWorld = world || null;
   let imageData = null;
-  let currentWorld = null;
-  let displayScale = 1;
+  let lastHUD = { fps: 0, count: 0 };
+  const colorTable = palette instanceof Uint8ClampedArray ? palette : new Uint8ClampedArray(palette || []);
+  const offscreen = document.createElement('canvas');
+  const offCtx = offscreen.getContext('2d');
+  if (!offCtx) {
+    throw new Error('Offscreen 2D context unavailable.');
+  }
 
-  function ensureImageData(world) {
-    if (!world) {
+  function ensureImageData(target) {
+    if (!target) {
       return;
     }
 
-    if (!imageData || imageData.width !== world.width || imageData.height !== world.height) {
-      imageData = new ImageData(world.width, world.height);
+    if (offscreen.width !== target.width || offscreen.height !== target.height) {
+      offscreen.width = target.width;
+      offscreen.height = target.height;
+    }
+
+    if (!imageData || imageData.width !== target.width || imageData.height !== target.height) {
+      imageData = offCtx.createImageData(target.width, target.height);
     }
   }
 
-  function resize(world = currentWorld) {
-    if (world) {
-      currentWorld = world;
-      ensureImageData(world);
-
-      if (canvas.width !== world.width) {
-        canvas.width = world.width;
-      }
-
-      if (canvas.height !== world.height) {
-        canvas.height = world.height;
-      }
-    }
-
-    const toolbarHeight = Math.max(Number(getToolbarHeight()) || 0, 0);
-    const { width: viewportWidth, height: viewportHeight } = getViewportSize(
-      canvas,
-      toolbarHeight,
-    );
-
-    if (currentWorld) {
-      const scaleX = viewportWidth / currentWorld.width;
-      const scaleY = viewportHeight / currentWorld.height;
-      const nextScale = Math.min(scaleX, scaleY);
-
-      displayScale = Number.isFinite(nextScale) && nextScale > 0 ? nextScale : 1;
-      const cssWidth = Math.max(Math.round(currentWorld.width * displayScale), 1);
-      const cssHeight = Math.max(Math.round(currentWorld.height * displayScale), 1);
-
-      canvas.style.width = `${cssWidth}px`;
-      canvas.style.height = `${cssHeight}px`;
-      canvas.style.maxWidth = '100%';
-      canvas.style.maxHeight = `${viewportHeight}px`;
-      canvas.style.margin = '0 auto';
-    } else {
-      canvas.style.width = `${viewportWidth}px`;
-      canvas.style.height = `${viewportHeight}px`;
-      displayScale = 1;
-    }
-
-    canvas.style.imageRendering = 'pixelated';
-    context.imageSmoothingEnabled = false;
-  }
-
-  function draw(world = currentWorld) {
-    if (!world) {
+  function writePixels(target) {
+    if (!target || !imageData) {
       return;
     }
 
-    if (currentWorld !== world) {
-      currentWorld = world;
-      ensureImageData(world);
-      if (canvas.width !== world.width || canvas.height !== world.height) {
-        canvas.width = world.width;
-        canvas.height = world.height;
-      }
-    }
-
-    ensureImageData(world);
-
-    if (!imageData) {
-      return;
-    }
-
-    const cells = world.cells;
-    const pixelBuffer = imageData.data;
-    const paletteLength = palette.length;
-    const defaultIndex = 0;
+    const cells = target.cells;
+    const buffer = imageData.data;
+    const paletteLength = colorTable.length;
 
     for (let i = 0; i < cells.length; i += 1) {
-      const elementId = cells[i] >>> 0;
-      let paletteIndex = elementId * 4;
-
-      if (paletteIndex < 0 || paletteIndex + 3 >= paletteLength) {
-        paletteIndex = defaultIndex;
+      const id = cells[i] >>> 0;
+      let offset = id * 4;
+      if (offset < 0 || offset + 3 >= paletteLength) {
+        offset = 0;
       }
 
-      const pixelIndex = i * 4;
-      pixelBuffer[pixelIndex] = palette[paletteIndex] ?? 0;
-      pixelBuffer[pixelIndex + 1] = palette[paletteIndex + 1] ?? 0;
-      pixelBuffer[pixelIndex + 2] = palette[paletteIndex + 2] ?? 0;
-      pixelBuffer[pixelIndex + 3] = palette[paletteIndex + 3] ?? 255;
+      const pixel = i * 4;
+      buffer[pixel] = colorTable[offset] ?? 0;
+      buffer[pixel + 1] = colorTable[offset + 1] ?? 0;
+      buffer[pixel + 2] = colorTable[offset + 2] ?? 0;
+      buffer[pixel + 3] = colorTable[offset + 3] ?? 255;
     }
-
-    context.putImageData(imageData, 0, 0);
   }
 
+  function draw(targetWorld = currentWorld, _info = undefined) {
+    if (!targetWorld) {
+      return;
+    }
+
+    if (currentWorld !== targetWorld) {
+      currentWorld = targetWorld;
+    }
+
+    ensureImageData(currentWorld);
+    writePixels(currentWorld);
+    if (imageData) {
+      offCtx.putImageData(imageData, 0, 0);
+      const dpr = window.devicePixelRatio || 1;
+      const displayWidth = canvas.width / dpr;
+      const displayHeight = canvas.height / dpr;
+      ctx.clearRect(0, 0, displayWidth, displayHeight);
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(
+        offscreen,
+        0,
+        0,
+        offscreen.width,
+        offscreen.height,
+        0,
+        0,
+        displayWidth,
+        displayHeight,
+      );
+    }
+  }
+
+  function drawHUD(info = {}) {
+    if (info && typeof info === 'object') {
+      lastHUD = { ...lastHUD, ...info };
+    }
+    return lastHUD;
+  }
+
+  function resize(targetWorld = currentWorld) {
+    if (!targetWorld) {
+      return;
+    }
+
+    ensureImageData(targetWorld);
+  }
+
+  resize(currentWorld);
+
   return {
-    resize,
     draw,
-    readPixels() {
-      try {
-        const snapshot = context.getImageData(0, 0, canvas.width, canvas.height);
-        return new Uint8ClampedArray(snapshot.data);
-      } catch (error) {
-        console.warn('Renderer.readPixels failed:', error);
-        return null;
-      }
-    },
-    getCanvasSize() {
-      return {
-        width: canvas.width,
-        height: canvas.height,
-      };
-    },
-    get pixelRatio() {
-      return displayScale;
-    },
-    get canvas() {
-      return canvas;
-    },
-    get currentWorld() {
-      return currentWorld;
+    drawHUD,
+    resize,
+    get context() {
+      return ctx;
     },
   };
 }
