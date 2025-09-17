@@ -1,4 +1,4 @@
-import { ELEMENTS, EMPTY, WALL, SAND, WATER } from './elements.js';
+import { ELEMENTS, EMPTY, WALL, SAND, WATER, OIL, FIRE } from './elements.js';
 
 const DEFAULT_WORLD_WIDTH = 256;
 const DEFAULT_WORLD_HEIGHT = 256;
@@ -22,7 +22,146 @@ const currentStep = {
   rng: null,
   frameParity: 0,
   stats: null,
+  limits: null,
+  metrics: null,
+  fireSpawnCap: 0,
+  fireSpawnedThisTick: 0,
+  particleBudget: null,
 };
+
+function clamp01(value) {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  if (value <= 0) {
+    return 0;
+  }
+  if (value >= 1) {
+    return 1;
+  }
+  return value;
+}
+
+function getFireSettings() {
+  const meta = ELEMENTS[FIRE];
+  if (meta && typeof meta.fire === 'object' && meta.fire !== null) {
+    return meta.fire;
+  }
+  return {};
+}
+
+function sampleFireLifetime() {
+  const settings = getFireSettings();
+  const minRaw = Math.trunc(Number.isFinite(settings.lifetimeMin) ? settings.lifetimeMin : settings.lifetime);
+  const maxRaw = Math.trunc(Number.isFinite(settings.lifetimeMax) ? settings.lifetimeMax : minRaw);
+  const fallbackMin = Number.isFinite(minRaw) ? minRaw : 20;
+  const min = Math.max(1, fallbackMin);
+  const max = Number.isFinite(maxRaw) ? Math.max(min, maxRaw) : min;
+  const span = Math.max(0, max - min);
+  const rngValue = currentStep.rng ? currentStep.rng() : Math.random();
+  const offset = span > 0 ? Math.floor(rngValue * (span + 1)) : 0;
+  const lifetime = min + offset;
+  if (lifetime > 255) {
+    return 255;
+  }
+  return Math.max(1, lifetime);
+}
+
+function setLifetime(world, index, value) {
+  if (!world || !world.lifetimes) {
+    return;
+  }
+  const numeric = Number.isFinite(value) ? Math.trunc(value) : 0;
+  world.lifetimes[index] = Math.max(0, Math.min(255, numeric));
+}
+
+function randomChance(probability) {
+  return (currentStep.rng ? currentStep.rng() : Math.random()) < clamp01(probability);
+}
+
+function extinguishFire(world, index) {
+  if (!world || !world.cells) {
+    return;
+  }
+  world.cells[index] = EMPTY;
+  if (world.flags) {
+    world.flags[index] = 0;
+  }
+  if (world.lastMoveDir) {
+    world.lastMoveDir[index] = 0;
+  }
+  setLifetime(world, index, 0);
+}
+
+function requestFireSpawn(world, targetWasEmpty = false) {
+  const cap = currentStep.fireSpawnCap;
+  if (Number.isFinite(cap) && cap >= 0 && currentStep.fireSpawnedThisTick >= cap) {
+    return false;
+  }
+
+  if (targetWasEmpty) {
+    const softCap = currentStep.limits?.softCap;
+    if (Number.isFinite(softCap) && softCap > 0) {
+      if (currentStep.particleBudget === null) {
+        const metricCount = Number.isFinite(currentStep.metrics?.particles)
+          ? Math.trunc(currentStep.metrics.particles)
+          : getParticleCount(world);
+        currentStep.particleBudget = Math.max(0, softCap - metricCount);
+      }
+      if (currentStep.particleBudget <= 0) {
+        return false;
+      }
+      currentStep.particleBudget -= 1;
+    }
+  }
+
+  currentStep.fireSpawnedThisTick += 1;
+  if (currentStep.stats) {
+    currentStep.stats.fireSpawns = (currentStep.stats.fireSpawns ?? 0) + 1;
+  }
+  return true;
+}
+
+function igniteCellAt(world, index, productId = FIRE) {
+  if (!world || !world.cells) {
+    return false;
+  }
+  if (index < 0 || index >= world.cells.length) {
+    return false;
+  }
+
+  const existing = world.cells[index];
+  if (!ELEMENTS[productId]) {
+    return false;
+  }
+
+  if (existing === productId) {
+    return false;
+  }
+
+  if (isImmovable(existing)) {
+    return false;
+  }
+
+  const wasEmpty = existing === EMPTY;
+  if (!requestFireSpawn(world, wasEmpty)) {
+    return false;
+  }
+
+  world.cells[index] = productId;
+  if (world.flags) {
+    world.flags[index] = FLAG_MOVED_THIS_TICK;
+  }
+  if (world.lastMoveDir) {
+    world.lastMoveDir[index] = 0;
+  }
+  if (productId === FIRE) {
+    setLifetime(world, index, sampleFireLifetime());
+  } else {
+    setLifetime(world, index, 0);
+  }
+  return true;
+}
 
 function mulberry32(seed) {
   let t = seed >>> 0;
@@ -108,6 +247,9 @@ function clearCellState(world, index) {
   if (world.lastMoveDir) {
     world.lastMoveDir[index] = 0;
   }
+  if (world.lifetimes) {
+    world.lifetimes[index] = 0;
+  }
 }
 
 export const UPDATERS = [];
@@ -187,6 +329,13 @@ function trySwapInternal(world, sourceIndex, targetIndex, options) {
 
   cells[targetIndex] = sourceId;
   cells[sourceIndex] = targetId;
+
+  if (world.lifetimes) {
+    const lifetimes = world.lifetimes;
+    const tempLifetime = lifetimes[sourceIndex];
+    lifetimes[sourceIndex] = lifetimes[targetIndex];
+    lifetimes[targetIndex] = tempLifetime;
+  }
 
   flags[targetIndex] |= FLAG_MOVED_THIS_TICK;
   flags[sourceIndex] |= FLAG_MOVED_THIS_TICK;
@@ -485,8 +634,270 @@ function updateWater(world, x, y) {
   }
 }
 
+function updateOil(world, x, y) {
+  const width = world.width;
+  const height = world.height;
+  const index = y * width + x;
+  const oilDensity = densityOf(OIL);
+  const metadata = ELEMENTS[OIL] || {};
+  const lateralRunMax = Math.max(1, Math.trunc(metadata.lateralRunMax ?? 1));
+  const viscosity = Math.max(1, Math.trunc(metadata.viscosity ?? 1));
+  const rng = currentStep.rng;
+  const parity = currentStep.frameParity;
+  const previousDir = world.lastMoveDir ? world.lastMoveDir[index] : 0;
+
+  const belowY = y + 1;
+  if (belowY < height) {
+    const belowIndex = index + width;
+    const belowId = world.cells[belowIndex];
+    if (isEmpty(belowId)) {
+      if (trySwapInternal(world, index, belowIndex, { afterSwapDir: 0 })) {
+        return;
+      }
+    } else if (isLiquid(belowId) && densityOf(belowId) < oilDensity) {
+      if (trySwapInternal(world, index, belowIndex, { afterSwapDir: 0 })) {
+        return;
+      }
+    }
+  } else {
+    if (world.lastMoveDir) {
+      world.lastMoveDir[index] = 0;
+    }
+    return;
+  }
+
+  const diagonalOrder = parity === 0 ? [-1, 1] : [1, -1];
+  if (rng && rng() < 0.35) {
+    diagonalOrder.reverse();
+  }
+
+  for (let i = 0; i < diagonalOrder.length; i += 1) {
+    const dir = diagonalOrder[i];
+    const nx = x + dir;
+    const ny = y + 1;
+    if (nx < 0 || nx >= width || ny >= height) {
+      continue;
+    }
+
+    const targetIndex = ny * width + nx;
+    const targetId = world.cells[targetIndex];
+    if (isEmpty(targetId)) {
+      if (trySwapInternal(world, index, targetIndex, { afterSwapDir: dir })) {
+        return;
+      }
+    } else if (isLiquid(targetId) && densityOf(targetId) < oilDensity) {
+      if (trySwapInternal(world, index, targetIndex, { afterSwapDir: dir })) {
+        return;
+      }
+    }
+  }
+
+  if (y > 0) {
+    const buoyancy = Number.isFinite(metadata.buoyancy) ? metadata.buoyancy : 0;
+    if (buoyancy > 0) {
+      const aboveIndex = index - width;
+      const aboveId = world.cells[aboveIndex];
+      if (
+        aboveIndex >= 0 &&
+        !isImmovable(aboveId) &&
+        isLiquid(aboveId) &&
+        densityOf(aboveId) > oilDensity
+      ) {
+        const chance = clamp01(0.05 + 0.03 * buoyancy);
+        if (chance > 0 && randomChance(chance)) {
+          if (trySwapInternal(world, index, aboveIndex, { allowDenser: true, cooldown: true })) {
+            if (world.lastMoveDir) {
+              world.lastMoveDir[aboveIndex] = 0;
+            }
+            return;
+          }
+        }
+      }
+    }
+  }
+
+  let attemptLateral = true;
+  if (viscosity > 1) {
+    const lateralChance = 1 / Math.max(1, viscosity);
+    attemptLateral = (rng ? rng() : Math.random()) < lateralChance;
+  }
+
+  let movedLaterally = false;
+  if (attemptLateral) {
+    const lateralOrder = chooseLateralOrder(previousDir, parity, rng);
+    for (let i = 0; i < lateralOrder.length; i += 1) {
+      const dir = lateralOrder[i];
+      if (dir === 0) {
+        continue;
+      }
+
+      let bestIndex = -1;
+      for (let step = 1; step <= lateralRunMax; step += 1) {
+        const nx = x + dir * step;
+        if (nx < 0 || nx >= width) {
+          break;
+        }
+        const candidateIndex = y * width + nx;
+        if (!isEmpty(world.cells[candidateIndex])) {
+          break;
+        }
+
+        const supportY = y + 1;
+        if (supportY >= height) {
+          bestIndex = candidateIndex;
+          continue;
+        }
+
+        const supportIndex = candidateIndex + width;
+        const supportId = world.cells[supportIndex];
+        if (canFallThrough(supportId, oilDensity)) {
+          bestIndex = candidateIndex;
+        } else {
+          break;
+        }
+      }
+
+      if (bestIndex !== -1) {
+        if (trySwapInternal(world, index, bestIndex, { afterSwapDir: dir })) {
+          movedLaterally = true;
+          break;
+        }
+      }
+    }
+  }
+
+  if (world.lastMoveDir && !movedLaterally) {
+    world.lastMoveDir[index] = 0;
+  }
+}
+
+function updateFire(world, x, y) {
+  const width = world.width;
+  const height = world.height;
+  const index = y * width + x;
+  const cells = world.cells;
+  const lifetimes = world.lifetimes;
+  const settings = getFireSettings();
+  const extinguishProbability = clamp01(settings.extinguishProbability ?? 0.5);
+  const defaultIgnite = clamp01(settings.igniteProbability ?? 0.2);
+
+  if (lifetimes) {
+    let lifetime = lifetimes[index];
+    if (lifetime <= 0) {
+      lifetime = sampleFireLifetime();
+    }
+    lifetime -= 1;
+    if (lifetime <= 0) {
+      extinguishFire(world, index);
+      return;
+    }
+    lifetimes[index] = lifetime;
+  }
+
+  // Water contact extinguish
+  const neighbors = [
+    { dx: 0, dy: -1 },
+    { dx: -1, dy: 0 },
+    { dx: 1, dy: 0 },
+    { dx: 0, dy: 1 },
+    { dx: -1, dy: -1 },
+    { dx: 1, dy: -1 },
+    { dx: -1, dy: 1 },
+    { dx: 1, dy: 1 },
+  ];
+  for (let i = 0; i < neighbors.length; i += 1) {
+    const nx = x + neighbors[i].dx;
+    const ny = y + neighbors[i].dy;
+    if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
+      continue;
+    }
+    const neighborIndex = ny * width + nx;
+    if (cells[neighborIndex] === WATER && randomChance(extinguishProbability)) {
+      extinguishFire(world, index);
+      return;
+    }
+  }
+
+  const cap = currentStep.fireSpawnCap;
+  const capActive = Number.isFinite(cap) && cap >= 0;
+
+  outer: for (let dy = -1; dy <= 1; dy += 1) {
+    for (let dx = -1; dx <= 1; dx += 1) {
+      if (dx === 0 && dy === 0) {
+        continue;
+      }
+      const nx = x + dx;
+      const ny = y + dy;
+      if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
+        continue;
+      }
+      if (capActive && currentStep.fireSpawnedThisTick >= cap) {
+        break outer;
+      }
+
+      const neighborIndex = ny * width + nx;
+      const neighborId = cells[neighborIndex];
+      if (neighborId === EMPTY || neighborId === FIRE) {
+        continue;
+      }
+      const meta = ELEMENTS[neighborId];
+      if (!meta || !meta.flammable) {
+        continue;
+      }
+      const combustion = meta.combustion || {};
+      const igniteProbability = clamp01(
+        Number.isFinite(combustion.igniteProbability) ? combustion.igniteProbability : defaultIgnite,
+      );
+      if (igniteProbability <= 0) {
+        continue;
+      }
+
+      const productId = Number.isFinite(combustion.product) ? combustion.product : FIRE;
+      if (!Number.isFinite(productId)) {
+        continue;
+      }
+      if (!randomChance(igniteProbability)) {
+        continue;
+      }
+      if (igniteCellAt(world, neighborIndex, productId)) {
+        if (capActive && currentStep.fireSpawnedThisTick >= cap) {
+          break outer;
+        }
+      }
+    }
+  }
+
+  const candidates = [
+    { dx: 0, dy: -1, dir: 0 },
+    { dx: -1, dy: -1, dir: -1 },
+    { dx: 1, dy: -1, dir: 1 },
+  ];
+
+  for (let i = 0; i < candidates.length; i += 1) {
+    const nx = x + candidates[i].dx;
+    const ny = y + candidates[i].dy;
+    if (nx < 0 || nx >= width || ny < 0) {
+      continue;
+    }
+    const targetIndex = ny * width + nx;
+    if (!isEmpty(cells[targetIndex])) {
+      continue;
+    }
+    if (
+      trySwapInternal(world, index, targetIndex, {
+        afterSwapDir: candidates[i].dir,
+        allowDenser: true,
+      })
+    ) {
+      return;
+    }
+  }
+}
+
 UPDATERS[SAND] = updateSand;
 UPDATERS[WATER] = updateWater;
+UPDATERS[OIL] = updateOil;
+UPDATERS[FIRE] = updateFire;
 
 export function createWorld(width, height) {
   const normalizedWidth = normalizeDimension(width, DEFAULT_WORLD_WIDTH);
@@ -496,6 +907,7 @@ export function createWorld(width, height) {
   const cells = new Uint16Array(cellCount);
   const flags = new Uint8Array(cellCount);
   const lastMoveDir = new Int8Array(cellCount);
+  const lifetimes = new Uint8Array(cellCount);
 
   function inBounds(x, y) {
     const ix = normalizeCoordinate(x);
@@ -531,6 +943,7 @@ export function createWorld(width, height) {
     cells,
     flags,
     lastMoveDir,
+    lifetimes,
     idx,
     inBounds,
   };
@@ -600,6 +1013,15 @@ export function step(world, context = {}) {
   currentStep.frameParity = parity;
   currentStep.rng = ensureRng(state.seed);
   currentStep.stats = context.stats ?? null;
+  currentStep.limits = context.limits ?? null;
+  currentStep.metrics = context.metrics ?? null;
+  const fireSettings = getFireSettings();
+  const rawCap = Number.isFinite(fireSettings.maxSpawnPerTick)
+    ? Math.trunc(fireSettings.maxSpawnPerTick)
+    : NaN;
+  currentStep.fireSpawnCap = Number.isFinite(rawCap) && rawCap >= 0 ? rawCap : Number.POSITIVE_INFINITY;
+  currentStep.fireSpawnedThisTick = 0;
+  currentStep.particleBudget = null;
 
   for (let y = height - 1; y >= 0; y -= 1) {
     const rowOffset = y * width;
@@ -626,6 +1048,11 @@ export function step(world, context = {}) {
 
   currentStep.rng = null;
   currentStep.stats = null;
+  currentStep.limits = null;
+  currentStep.metrics = null;
+  currentStep.fireSpawnCap = 0;
+  currentStep.fireSpawnedThisTick = 0;
+  currentStep.particleBudget = null;
 }
 
 export function paintCircle(world, x, y, radius, elementId) {
@@ -643,6 +1070,7 @@ export function paintCircle(world, x, y, radius, elementId) {
   const cells = world.cells;
   const flags = world.flags;
   const lastMoveDir = world.lastMoveDir;
+  const lifetimes = world.lifetimes;
 
   const centerX = Math.trunc(Number.isFinite(x) ? x : NaN);
   const centerY = Math.trunc(Number.isFinite(y) ? y : NaN);
@@ -666,6 +1094,9 @@ export function paintCircle(world, x, y, radius, elementId) {
         flags[index] = 0;
         if (lastMoveDir) {
           lastMoveDir[index] = 0;
+        }
+        if (lifetimes) {
+          lifetimes[index] = 0;
         }
         changed += 1;
       }
@@ -697,14 +1128,17 @@ export function paintCircle(world, x, y, radius, elementId) {
 
     for (let sampleX = startX; sampleX <= endX; sampleX += 1) {
       const index = sampleY * width + sampleX;
-      if (cells[index] !== elementId) {
-        cells[index] = elementId;
-        flags[index] = 0;
-        if (lastMoveDir) {
-          lastMoveDir[index] = 0;
+        if (cells[index] !== elementId) {
+          cells[index] = elementId;
+          flags[index] = 0;
+          if (lastMoveDir) {
+            lastMoveDir[index] = 0;
+          }
+          if (lifetimes) {
+            lifetimes[index] = 0;
+          }
+          changed += 1;
         }
-        changed += 1;
-      }
     }
   }
 
@@ -766,6 +1200,9 @@ export function fillRect(world, elementId, x0, y0, x1, y1) {
       if (lastMoveDir) {
         lastMoveDir[index] = 0;
       }
+      if (lifetimes) {
+        lifetimes[index] = 0;
+      }
       writes += 1;
     }
   }
@@ -802,6 +1239,7 @@ function paintRectangle(world, startX, startY, sizeX, sizeY, elementId) {
   const y0 = Math.max(0, Math.trunc(startY));
   const x1 = Math.min(width, x0 + Math.max(0, Math.trunc(sizeX)));
   const y1 = Math.min(height, y0 + Math.max(0, Math.trunc(sizeY)));
+  const lifetimes = world.lifetimes;
 
   for (let y = y0; y < y1; y += 1) {
     const rowOffset = y * width;
@@ -811,6 +1249,9 @@ function paintRectangle(world, startX, startY, sizeX, sizeY, elementId) {
       world.flags[index] = 0;
       if (world.lastMoveDir) {
         world.lastMoveDir[index] = 0;
+      }
+      if (lifetimes) {
+        lifetimes[index] = 0;
       }
     }
   }
@@ -826,6 +1267,9 @@ export function runWaterOverSandTest(world, options = {}) {
   world.flags.fill(0);
   if (world.lastMoveDir) {
     world.lastMoveDir.fill(0);
+  }
+  if (world.lifetimes) {
+    world.lifetimes.fill(0);
   }
 
   const width = world.width;

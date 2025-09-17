@@ -388,6 +388,137 @@ export async function runSelfChecksAll(Game, api) {
     },
   ]);
 
+  await runPhase('Phase 6', [
+    () => {
+      if (!Number.isInteger(api.OIL) || !Number.isInteger(api.FIRE)) {
+        return 'OIL and FIRE constants must exist.';
+      }
+      if (!api.ELEMENTS?.[api.OIL] || !api.ELEMENTS?.[api.FIRE]) {
+        return 'ELEMENTS table must include OIL and FIRE metadata.';
+      }
+      const oilOffset = api.OIL * 4;
+      const fireOffset = api.FIRE * 4;
+      if (oilOffset + 3 >= api.PALETTE.length) {
+        return 'Palette entry for OIL is missing.';
+      }
+      if (fireOffset + 3 >= api.PALETTE.length) {
+        return 'Palette entry for FIRE is missing.';
+      }
+      return null;
+    },
+    () => {
+      const attempts = 3;
+      for (let attempt = 0; attempt < attempts; attempt += 1) {
+        const world = api.createWorld(6, 6);
+        world.cells.fill(api.EMPTY);
+        world.flags.fill(0);
+        if (world.lastMoveDir) {
+          world.lastMoveDir.fill(0);
+        }
+        if (world.lifetimes) {
+          world.lifetimes.fill(0);
+        }
+        const fireIndex = api.idx(world, 2, 2);
+        world.cells[fireIndex] = api.FIRE;
+        const oilNeighbors = [
+          api.idx(world, 1, 3),
+          api.idx(world, 2, 3),
+          api.idx(world, 3, 3),
+          api.idx(world, 2, 4),
+        ];
+        oilNeighbors.forEach((index) => {
+          world.cells[index] = api.OIL;
+        });
+        let ignited = false;
+        for (let frame = 0; frame < 140; frame += 1) {
+          api.beginTick(world);
+          api.step(world, {
+            state: { seed: (Game.state.seed ?? 0) + attempt, frame },
+            limits: Game.limits,
+            metrics: Game.metrics,
+          });
+          api.endTick(world);
+          if (oilNeighbors.some((index) => world.cells[index] === api.FIRE)) {
+            ignited = true;
+            break;
+          }
+        }
+        if (ignited) {
+          return null;
+        }
+      }
+      return 'Oil placed near fire did not ignite after multiple attempts.';
+    },
+    () => {
+      const world = api.createWorld(4, 4);
+      world.cells.fill(api.EMPTY);
+      world.flags.fill(0);
+      if (world.lastMoveDir) {
+        world.lastMoveDir.fill(0);
+      }
+      if (world.lifetimes) {
+        world.lifetimes.fill(0);
+      }
+      const fireIndex = api.idx(world, 1, 0);
+      const waterIndex = api.idx(world, 1, 1);
+      world.cells[fireIndex] = api.FIRE;
+      world.cells[waterIndex] = api.WATER;
+      let extinguished = false;
+      for (let frame = 0; frame < 80; frame += 1) {
+        api.beginTick(world);
+        api.step(world, {
+          state: { seed: Game.state.seed ?? 0, frame },
+          limits: Game.limits,
+          metrics: Game.metrics,
+        });
+        api.endTick(world);
+        if (world.cells[fireIndex] !== api.FIRE) {
+          extinguished = true;
+          break;
+        }
+      }
+      if (!extinguished) {
+        return 'Fire in contact with water should extinguish quickly.';
+      }
+      return null;
+    },
+    () => {
+      const fireMeta = api.ELEMENTS?.[api.FIRE];
+      const spawnCap = Math.trunc(fireMeta?.fire?.maxSpawnPerTick ?? 0);
+      if (!Number.isFinite(spawnCap) || spawnCap <= 0) {
+        return 'Fire spawn cap metadata missing or invalid.';
+      }
+      const world = api.createWorld(12, 6);
+      world.cells.fill(api.OIL);
+      world.flags.fill(0);
+      if (world.lastMoveDir) {
+        world.lastMoveDir.fill(0);
+      }
+      if (world.lifetimes) {
+        world.lifetimes.fill(0);
+      }
+      const origin = api.idx(world, Math.floor(world.width / 2), Math.floor(world.height / 2));
+      world.cells[origin] = api.FIRE;
+      let previous = findElementPositions(world, api.FIRE).length;
+      for (let frame = 0; frame < 8; frame += 1) {
+        api.beginTick(world);
+        api.step(world, {
+          state: { seed: Game.state.seed ?? 0, frame },
+          limits: Game.limits,
+          metrics: Game.metrics,
+        });
+        api.endTick(world);
+        const count = findElementPositions(world, api.FIRE).length;
+        const delta = count - previous;
+        if (delta > spawnCap) {
+          return `Fire spawn delta ${delta} exceeded cap ${spawnCap}.`;
+        }
+        previous = count;
+      }
+      return null;
+    },
+  ]);
+
   return {
     ok: failures.length === 0,
     failures,
