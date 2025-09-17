@@ -12,11 +12,13 @@ import { createRenderer } from './render.js';
 import {
   createSimulation,
   paintCircle,
+  fillRect,
   beginTick,
   endTick,
   step as stepWorld,
   setSimulationSeed,
   runWaterOverSandTest,
+  getParticleCount,
 } from './sim.js';
 import { initializeUI } from './ui.js';
 import { runSelfChecks, runSelfChecksPhase4 } from './selfcheck.js';
@@ -25,6 +27,9 @@ const MAX_WRITES_PER_FRAME = 50000;
 const DEFAULT_BRUSH_SIZE = 6;
 const FPS_SMOOTHING = 0.12;
 const THROTTLE_NOTICE_MS = 800;
+const SOFT_PARTICLE_CAP = 60000;
+const CAP_WARNING_DURATION_MS = 1600;
+const PARTICLE_SAMPLE_INTERVAL_MS = 200;
 const PHYSICS_HZ = 30;
 const PHYSICS_INTERVAL_MS = 1000 / PHYSICS_HZ;
 const PHYSICS_STEP_SECONDS = 1 / PHYSICS_HZ;
@@ -139,6 +144,49 @@ function createDebugOverlay(visible) {
   };
 }
 
+function createPerfHud() {
+  const hud = document.createElement('div');
+  hud.id = 'powder-perf-hud';
+  hud.style.position = 'fixed';
+  hud.style.top = '8px';
+  hud.style.right = '8px';
+  hud.style.padding = '0.45rem 0.65rem';
+  hud.style.background = 'rgba(12, 16, 27, 0.82)';
+  hud.style.color = '#e7edff';
+  hud.style.fontFamily = 'monospace';
+  hud.style.fontSize = '12px';
+  hud.style.lineHeight = '1.45';
+  hud.style.borderRadius = '10px';
+  hud.style.boxShadow = '0 6px 14px rgba(0, 0, 0, 0.45)';
+  hud.style.pointerEvents = 'none';
+  hud.style.zIndex = '1600';
+  hud.style.outline = 'none';
+
+  const fpsLine = document.createElement('div');
+  const particleLine = document.createElement('div');
+  const warningLine = document.createElement('div');
+  warningLine.style.color = '#ff8080';
+  warningLine.style.fontWeight = '600';
+  warningLine.style.minHeight = '1em';
+
+  hud.append(fpsLine, particleLine, warningLine);
+  document.body.appendChild(hud);
+
+  return {
+    element: hud,
+    update({ fps, particles, warning }) {
+      fpsLine.textContent = `FPS: ${Number.isFinite(fps) ? fps.toFixed(1) : '0.0'}`;
+      particleLine.textContent = `Particles: ${Math.max(0, Math.trunc(particles))}`;
+      warningLine.textContent = warning ? 'Particle cap reached' : '';
+      hud.dataset.warning = warning ? 'true' : 'false';
+      hud.style.outline = warning ? '2px solid rgba(255, 128, 128, 0.65)' : 'none';
+    },
+    destroy() {
+      hud.remove();
+    },
+  };
+}
+
 const layout = { toolbarHeight: 0 };
 const paletteLookup = Object.freeze(createPaletteLookup(RAW_PALETTE));
 const elementNames = createElementNameMap();
@@ -161,6 +209,7 @@ const renderer = createRenderer(elements.canvas, elements.context, {
 });
 
 const world = simulation.state.world;
+refreshParticleCount(true);
 const stateListeners = new Set();
 
 const Game = {
@@ -173,12 +222,16 @@ const Game = {
     brushSize: DEFAULT_BRUSH_SIZE,
     currentElementId: SAND,
     erasing: false,
+    rectClearing: false,
     frame: 0,
     seed: initialSeed,
   },
   metrics: {
     frameCount: 0,
     fps: 0,
+    particleCount: 0,
+    lastParticleSample: 0,
+    capWarningUntil: 0,
   },
 };
 
@@ -204,6 +257,18 @@ function notifyStateChange() {
       console.error('State listener error', error);
     }
   }
+}
+
+function refreshParticleCount(force = false) {
+  const now = performance.now();
+  const lastSample = Number(Game.metrics.lastParticleSample) || 0;
+
+  if (force || now - lastSample >= PARTICLE_SAMPLE_INTERVAL_MS) {
+    Game.metrics.particleCount = getParticleCount(world);
+    Game.metrics.lastParticleSample = now;
+  }
+
+  return Game.metrics.particleCount;
 }
 
 Game.onStateChange = function onStateChange(listener) {
@@ -266,8 +331,40 @@ Game.toggleEraser = function toggleEraser(forceValue) {
   const next =
     typeof forceValue === 'boolean' ? forceValue : !Boolean(Game.state.erasing);
 
+  let changed = false;
+
+  if (next && Game.state.rectClearing) {
+    Game.state.rectClearing = false;
+    changed = true;
+  }
+
   if (next !== Game.state.erasing) {
     Game.state.erasing = next;
+    changed = true;
+  }
+
+  if (changed) {
+    notifyStateChange();
+  }
+};
+
+Game.toggleRectClear = function toggleRectClear(forceValue) {
+  const next =
+    typeof forceValue === 'boolean' ? forceValue : !Boolean(Game.state.rectClearing);
+
+  let changed = false;
+
+  if (next && Game.state.erasing) {
+    Game.state.erasing = false;
+    changed = true;
+  }
+
+  if (next !== Game.state.rectClearing) {
+    Game.state.rectClearing = next;
+    changed = true;
+  }
+
+  if (changed) {
     notifyStateChange();
   }
 };
@@ -292,7 +389,22 @@ Game.clearWorld = function clearWorld() {
   if (world.lastMoveDir) {
     world.lastMoveDir.fill(0);
   }
+  Game.metrics.particleCount = 0;
+  Game.metrics.lastParticleSample = performance.now();
+  Game.metrics.capWarningUntil = 0;
   renderer.draw(world);
+  updatePerfHud();
+};
+
+Game.clearRectArea = function clearRectArea(x0, y0, x1, y1) {
+  const writes = fillRect(world, EMPTY, x0, y0, x1, y1);
+  if (writes > 0) {
+    refreshParticleCount(true);
+    Game.metrics.capWarningUntil = 0;
+    renderer.draw(world);
+    updatePerfHud();
+  }
+  return writes;
 };
 
 let paintFrameIndex = -1;
@@ -301,6 +413,10 @@ let throttleNoticeUntil = 0;
 
 Game.paintAtWorld = function paintAtWorld(x, y, radius, elementId) {
   if (!world || !world.cells) {
+    return 0;
+  }
+
+  if (Game.state.rectClearing) {
     return 0;
   }
 
@@ -340,6 +456,15 @@ Game.paintAtWorld = function paintAtWorld(x, y, radius, elementId) {
     ? EMPTY
     : Game.state.currentElementId;
 
+  if (brushElement !== EMPTY && brushElement !== WALL) {
+    const currentParticles = refreshParticleCount(true);
+    if (currentParticles >= SOFT_PARTICLE_CAP) {
+      Game.metrics.capWarningUntil = performance.now() + CAP_WARNING_DURATION_MS;
+      updatePerfHud();
+      return 0;
+    }
+  }
+
   const writes = paintCircle(world, tx, ty, radiusValue, brushElement);
 
   if (writes > 0) {
@@ -347,7 +472,9 @@ Game.paintAtWorld = function paintAtWorld(x, y, radius, elementId) {
     if (paintWritesThisFrame >= MAX_WRITES_PER_FRAME) {
       throttleNoticeUntil = performance.now() + THROTTLE_NOTICE_MS;
     }
+    refreshParticleCount(true);
     renderer.draw(world);
+    updatePerfHud();
   }
 
   return writes;
@@ -358,6 +485,10 @@ const pointerState = {
   mouseActive: false,
   pendingPoint: null,
   scheduled: false,
+  rectActive: false,
+  rectStart: null,
+  rectType: null,
+  rectEnd: null,
 };
 
 function clientToWorld(clientX, clientY) {
@@ -380,6 +511,84 @@ function clientToWorld(clientX, clientY) {
   return { x: worldX, y: worldY };
 }
 
+function beginRectSelection(clientX, clientY, type) {
+  if (!Game.state.rectClearing) {
+    return false;
+  }
+
+  const coords = clientToWorld(clientX, clientY);
+
+  if (!coords) {
+    pointerState.rectActive = false;
+    pointerState.rectStart = null;
+    pointerState.rectEnd = null;
+    pointerState.rectType = null;
+    return false;
+  }
+
+  pointerState.rectActive = true;
+  pointerState.rectStart = coords;
+  pointerState.rectEnd = coords;
+  pointerState.rectType = type;
+  return true;
+}
+
+function updateRectSelection(clientX, clientY) {
+  if (!pointerState.rectActive) {
+    return;
+  }
+
+  if (!Game.state.rectClearing) {
+    cancelRectSelection();
+    return;
+  }
+
+  const coords = clientToWorld(clientX, clientY);
+
+  if (!coords) {
+    return;
+  }
+
+  pointerState.rectEnd = coords;
+}
+
+function finalizeRectSelection(clientX, clientY) {
+  if (!pointerState.rectActive) {
+    return false;
+  }
+
+  if (!Game.state.rectClearing) {
+    cancelRectSelection();
+    return false;
+  }
+
+  const coords = clientToWorld(clientX, clientY);
+  if (coords) {
+    pointerState.rectEnd = coords;
+  }
+
+  const start = pointerState.rectStart;
+  const end = pointerState.rectEnd;
+
+  pointerState.rectActive = false;
+  pointerState.rectStart = null;
+  pointerState.rectEnd = null;
+  pointerState.rectType = null;
+
+  if (!start || !end) {
+    return false;
+  }
+
+  return Game.clearRectArea(start.x, start.y, end.x, end.y) > 0;
+}
+
+function cancelRectSelection() {
+  pointerState.rectActive = false;
+  pointerState.rectStart = null;
+  pointerState.rectEnd = null;
+  pointerState.rectType = null;
+}
+
 function processScheduledPaint() {
   pointerState.scheduled = false;
 
@@ -395,6 +604,10 @@ function processScheduledPaint() {
   }
 
   if (point.type === 'mouse' && !pointerState.mouseActive) {
+    return;
+  }
+
+  if (Game.state.rectClearing) {
     return;
   }
 
@@ -427,6 +640,9 @@ function handleTouchStart(event) {
     if (event.cancelable) {
       event.preventDefault();
     }
+    pointerState.touchActive = false;
+    pointerState.pendingPoint = null;
+    cancelRectSelection();
     return;
   }
 
@@ -437,6 +653,14 @@ function handleTouchStart(event) {
   }
 
   pointerState.touchActive = true;
+
+  if (Game.state.rectClearing) {
+    if (event.cancelable) {
+      event.preventDefault();
+    }
+    beginRectSelection(touch.clientX, touch.clientY, 'touch');
+    return;
+  }
 
   if (event.cancelable) {
     event.preventDefault();
@@ -456,6 +680,7 @@ function handleTouchMove(event) {
     }
     pointerState.touchActive = false;
     pointerState.pendingPoint = null;
+    cancelRectSelection();
     return;
   }
 
@@ -469,12 +694,22 @@ function handleTouchMove(event) {
     event.preventDefault();
   }
 
+  if (Game.state.rectClearing && pointerState.rectActive) {
+    updateRectSelection(touch.clientX, touch.clientY);
+    return;
+  }
+
   schedulePaint({ x: touch.clientX, y: touch.clientY, type: 'touch' });
 }
 
 function handleTouchEnd(event) {
   if (event.cancelable) {
     event.preventDefault();
+  }
+
+  if (Game.state.rectClearing && pointerState.rectActive) {
+    const touch = event.changedTouches[0] || event.touches[0];
+    finalizeRectSelection(touch?.clientX, touch?.clientY);
   }
 
   pointerState.touchActive = event.touches.length > 0;
@@ -484,6 +719,7 @@ function handleTouchEnd(event) {
 function handleTouchCancel() {
   pointerState.touchActive = false;
   pointerState.pendingPoint = null;
+  cancelRectSelection();
 }
 
 function handleMouseDown(event) {
@@ -493,6 +729,12 @@ function handleMouseDown(event) {
 
   pointerState.mouseActive = true;
   event.preventDefault();
+
+  if (Game.state.rectClearing) {
+    beginRectSelection(event.clientX, event.clientY, 'mouse');
+    return;
+  }
+
   schedulePaint({ x: event.clientX, y: event.clientY, type: 'mouse' });
 }
 
@@ -502,12 +744,22 @@ function handleMouseMove(event) {
   }
 
   event.preventDefault();
+
+  if (Game.state.rectClearing && pointerState.rectActive) {
+    updateRectSelection(event.clientX, event.clientY);
+    return;
+  }
+
   schedulePaint({ x: event.clientX, y: event.clientY, type: 'mouse' });
 }
 
 function handleMouseUp(event) {
   if (event.button !== 0) {
     return;
+  }
+
+  if (Game.state.rectClearing && pointerState.rectActive) {
+    finalizeRectSelection(event.clientX, event.clientY);
   }
 
   pointerState.mouseActive = false;
@@ -517,6 +769,7 @@ function handleMouseUp(event) {
 function handleMouseLeave() {
   pointerState.mouseActive = false;
   pointerState.pendingPoint = null;
+  cancelRectSelection();
 }
 
 const canvas = elements.canvas;
@@ -534,6 +787,7 @@ canvas.addEventListener('contextmenu', (event) => {
 
 const debugVisible = new URLSearchParams(window.location.search).get('debug') !== '0';
 const debugOverlay = createDebugOverlay(debugVisible);
+const perfHud = createPerfHud();
 
 function updateDebugOverlay() {
   if (!debugOverlay) {
@@ -552,14 +806,32 @@ function updateDebugOverlay() {
   });
 }
 
+function updatePerfHud() {
+  if (!perfHud) {
+    return;
+  }
+
+  const now = performance.now();
+  const particles = refreshParticleCount(false);
+  const warning = now < Game.metrics.capWarningUntil;
+
+  perfHud.update({
+    fps: Game.metrics.fps || 0,
+    particles,
+    warning,
+  });
+}
+
 function handleResize() {
   renderer.resize(world);
   updateDebugOverlay();
+  updatePerfHud();
 }
 
 function handleViewportChange() {
   renderer.resize(world);
   updateDebugOverlay();
+  updatePerfHud();
 }
 
 let physicsHandle = null;
@@ -624,6 +896,7 @@ function loop(timestamp) {
 
   renderer.draw(world);
   updateDebugOverlay();
+  updatePerfHud();
 
   frameHandle = window.requestAnimationFrame(loop);
 }
@@ -633,6 +906,7 @@ function start() {
     renderer.resize(world);
     renderer.draw(world);
     updateDebugOverlay();
+    updatePerfHud();
     lastTimestamp = 0;
     frameHandle = window.requestAnimationFrame(loop);
   }
@@ -683,6 +957,9 @@ Game.destroy = function destroy() {
   if (debugOverlay) {
     debugOverlay.destroy();
   }
+  if (perfHud) {
+    perfHud.destroy();
+  }
 };
 
 Object.defineProperty(Game, 'isRunning', {
@@ -728,6 +1005,7 @@ Game.ui = ui;
 renderer.resize(world);
 renderer.draw(world);
 updateDebugOverlay();
+updatePerfHud();
 
 start();
 
@@ -805,6 +1083,9 @@ function installQC() {
     clear() {
       Game.clearWorld();
     },
+    clearRect(x0, y0, x1, y1) {
+      Game.clearRectArea(Number(x0), Number(y0), Number(x1), Number(y1));
+    },
     setBrush(size) {
       Game.setBrushSize(size);
       return Game.state.brushSize;
@@ -816,6 +1097,14 @@ function installQC() {
     toggleEraser() {
       Game.toggleEraser();
       return Game.state.erasing;
+    },
+    toggleRectClear() {
+      Game.toggleRectClear();
+      return Game.state.rectClearing;
+    },
+    particles() {
+      refreshParticleCount(true);
+      return Game.metrics.particleCount;
     },
     setSeed(seed) {
       return Game.setSeed(seed);
@@ -837,6 +1126,7 @@ function installQC() {
 
       renderer.draw(testWorld);
       updateDebugOverlay();
+      updatePerfHud();
 
       if (!wasPaused) {
         Game.togglePause(false);
