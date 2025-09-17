@@ -1,3 +1,18 @@
+export const ELEMENTS = Object.freeze({
+  EMPTY: 0,
+  WALL: 1,
+  SAND: 2,
+});
+
+export const PALETTE = new Uint8ClampedArray([
+  // EMPTY
+  7, 9, 15, 255,
+  // WALL
+  54, 57, 66, 255,
+  // SAND
+  237, 201, 81, 255,
+]);
+
 export function createGameElements() {
   const canvas = document.getElementById('game-canvas');
 

@@ -1,71 +1,134 @@
-export function createRenderer(canvas, context) {
-  let pixelRatio = 1;
+import { PALETTE } from './elements.js';
 
-  function getViewportSize() {
-    const viewport = window.visualViewport;
+function getViewportSize(canvas) {
+  const viewport = window.visualViewport;
 
-    if (viewport) {
-      return {
-        width: Math.max(Math.round(viewport.width), 1),
-        height: Math.max(Math.round(viewport.height), 1),
-      };
-    }
-
-    const root = document.documentElement;
-    const width = root.clientWidth || window.innerWidth || canvas.clientWidth || 1;
-    const height = root.clientHeight || window.innerHeight || canvas.clientHeight || 1;
-
+  if (viewport) {
     return {
-      width: Math.max(width, 1),
-      height: Math.max(height, 1),
+      width: Math.max(Math.round(viewport.width), 1),
+      height: Math.max(Math.round(viewport.height), 1),
     };
   }
 
-  function resize() {
-    pixelRatio = Math.max(window.devicePixelRatio || 1, 1);
+  const root = document.documentElement;
+  const width =
+    root.clientWidth || window.innerWidth || canvas.clientWidth || canvas.width || 1;
+  const height =
+    root.clientHeight || window.innerHeight || canvas.clientHeight || canvas.height || 1;
 
-    const { width, height } = getViewportSize();
-    const displayWidth = Math.max(Math.floor(width * pixelRatio), 1);
-    const displayHeight = Math.max(Math.floor(height * pixelRatio), 1);
+  return {
+    width: Math.max(Math.round(width), 1),
+    height: Math.max(Math.round(height), 1),
+  };
+}
 
-    if (canvas.width !== displayWidth) {
-      canvas.width = displayWidth;
+export function createRenderer(canvas, context) {
+  let imageData = null;
+  let currentWorld = null;
+  let displayScale = 1;
+
+  function ensureImageData(world) {
+    if (!world) {
+      return;
     }
 
-    if (canvas.height !== displayHeight) {
-      canvas.height = displayHeight;
+    if (!imageData || imageData.width !== world.width || imageData.height !== world.height) {
+      imageData = new ImageData(world.width, world.height);
+    }
+  }
+
+  function resize(world = currentWorld) {
+    if (world) {
+      currentWorld = world;
+      ensureImageData(world);
+
+      if (canvas.width !== world.width) {
+        canvas.width = world.width;
+      }
+
+      if (canvas.height !== world.height) {
+        canvas.height = world.height;
+      }
     }
 
-    canvas.style.width = `${width}px`;
-    canvas.style.height = `${height}px`;
+    const { width: viewportWidth, height: viewportHeight } = getViewportSize(canvas);
+
+    if (currentWorld) {
+      const scaleX = viewportWidth / currentWorld.width;
+      const scaleY = viewportHeight / currentWorld.height;
+      const nextScale = Math.min(scaleX, scaleY);
+
+      displayScale = Number.isFinite(nextScale) && nextScale > 0 ? nextScale : 1;
+      const cssWidth = Math.max(Math.round(currentWorld.width * displayScale), 1);
+      const cssHeight = Math.max(Math.round(currentWorld.height * displayScale), 1);
+
+      canvas.style.width = `${cssWidth}px`;
+      canvas.style.height = `${cssHeight}px`;
+    } else {
+      canvas.style.width = `${viewportWidth}px`;
+      canvas.style.height = `${viewportHeight}px`;
+      displayScale = 1;
+    }
+
+    canvas.style.imageRendering = 'pixelated';
+    context.imageSmoothingEnabled = false;
   }
 
   function render(state) {
-    const logicalWidth = canvas.width / pixelRatio;
-    const logicalHeight = canvas.height / pixelRatio;
+    const world = state.world;
 
-    context.save();
-    context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+    if (!world) {
+      return;
+    }
 
-    context.clearRect(0, 0, logicalWidth, logicalHeight);
-    context.fillStyle = '#05070f';
-    context.fillRect(0, 0, logicalWidth, logicalHeight);
+    if (currentWorld !== world) {
+      currentWorld = world;
+      ensureImageData(world);
 
-    const fontSize = Math.max(24, Math.round(Math.min(logicalWidth, logicalHeight) * 0.08));
-    context.fillStyle = '#f5f7ff';
-    context.font = `600 ${fontSize}px "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif`;
-    context.textAlign = 'center';
-    context.textBaseline = 'middle';
-    context.fillText(state.message, logicalWidth / 2, logicalHeight / 2);
+      if (canvas.width !== world.width || canvas.height !== world.height) {
+        canvas.width = world.width;
+        canvas.height = world.height;
+      }
 
-    context.restore();
+      canvas.style.imageRendering = 'pixelated';
+      context.imageSmoothingEnabled = false;
+    }
+
+    ensureImageData(world);
+
+    if (!imageData) {
+      return;
+    }
+
+    const cells = world.cells;
+    const pixelBuffer = imageData.data;
+    const palette = PALETTE;
+    const paletteLength = palette.length;
+    const defaultIndex = 0;
+
+    for (let i = 0; i < cells.length; i += 1) {
+      const elementId = cells[i];
+      let paletteIndex = elementId * 4;
+
+      if (paletteIndex < 0 || paletteIndex + 3 >= paletteLength) {
+        paletteIndex = defaultIndex;
+      }
+
+      const pixelIndex = i * 4;
+      pixelBuffer[pixelIndex] = palette[paletteIndex];
+      pixelBuffer[pixelIndex + 1] = palette[paletteIndex + 1];
+      pixelBuffer[pixelIndex + 2] = palette[paletteIndex + 2];
+      pixelBuffer[pixelIndex + 3] = palette[paletteIndex + 3];
+    }
+
+    context.putImageData(imageData, 0, 0);
   }
 
   return {
     resize,
     render,
     get pixelRatio() {
-      return pixelRatio;
+      return displayScale;
     },
   };
 }
