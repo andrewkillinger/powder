@@ -5,6 +5,14 @@ export const WATER = 3;
 export const OIL = 4;
 export const FIRE = 5;
 
+export const CATEGORY_ORDER = Object.freeze([
+  'Powders',
+  'Liquids',
+  'Gases',
+  'Solids',
+  'Specials',
+]);
+
 export const ELEMENTS = [];
 
 ELEMENTS[EMPTY] = Object.freeze({
@@ -12,6 +20,7 @@ ELEMENTS[EMPTY] = Object.freeze({
   name: 'Empty',
   icon: '⬛',
   state: 'void',
+  category: 'Specials',
   density: 0,
   immovable: true,
   viscosity: 0,
@@ -24,6 +33,7 @@ ELEMENTS[WALL] = Object.freeze({
   name: 'Wall',
   icon: '🧱',
   state: 'solid',
+  category: 'Solids',
   density: 10000,
   immovable: true,
   viscosity: 0,
@@ -36,6 +46,7 @@ ELEMENTS[SAND] = Object.freeze({
   name: 'Sand',
   icon: '⏳',
   state: 'solid',
+  category: 'Powders',
   density: 1700,
   immovable: false,
   viscosity: 4,
@@ -48,6 +59,7 @@ ELEMENTS[WATER] = Object.freeze({
   name: 'Water',
   icon: '💧',
   state: 'liquid',
+  category: 'Liquids',
   density: 1000,
   immovable: false,
   viscosity: 1,
@@ -60,6 +72,7 @@ ELEMENTS[OIL] = Object.freeze({
   name: 'Oil',
   icon: '🛢️',
   state: 'liquid',
+  category: 'Liquids',
   density: 870,
   immovable: false,
   viscosity: 3,
@@ -77,6 +90,7 @@ ELEMENTS[FIRE] = Object.freeze({
   name: 'Fire',
   icon: '🔥',
   state: 'gas',
+  category: 'Gases',
   density: 1,
   immovable: false,
   viscosity: 0,
@@ -116,11 +130,39 @@ export const PALETTE = new Uint8ClampedArray([
   252, 110, 28, 255,
 ]);
 
-export const ELEMENT_LIST = Object.freeze([
+const CATEGORY_INDEX = CATEGORY_ORDER.reduce((acc, name, index) => {
+  acc[name] = index;
+  return acc;
+}, Object.create(null));
+
+const orderedElements = ELEMENTS.filter((element) => {
+  return element && element.id !== EMPTY && element.id !== WALL;
+});
+
+orderedElements.sort((a, b) => {
+  const aIndex = CATEGORY_INDEX[a.category] ?? Number.MAX_SAFE_INTEGER;
+  const bIndex = CATEGORY_INDEX[b.category] ?? Number.MAX_SAFE_INTEGER;
+  if (aIndex !== bIndex) {
+    return aIndex - bIndex;
+  }
+  return a.id - b.id;
+});
+
+const elementList = [
   ELEMENTS[EMPTY],
   ELEMENTS[WALL],
-  ELEMENTS[SAND],
-  ELEMENTS[WATER],
-  ELEMENTS[OIL],
-  ELEMENTS[FIRE],
-]);
+  ...orderedElements,
+];
+
+export const ELEMENT_LIST = Object.freeze(elementList);
+
+export const ELEMENT_CATEGORIES = Object.freeze(
+  CATEGORY_ORDER.map((name) =>
+    Object.freeze({
+      name,
+      elements: Object.freeze(
+        elementList.filter((element) => element?.category === name)
+      ),
+    })
+  )
+);
