@@ -23,7 +23,7 @@ import { initUI } from './ui.js';
 import { runSelfChecksAll } from './selfcheck.js';
 
 const SOFT_PARTICLE_CAP = 60000;
-const PHYSICS_HZ = 30;
+const PHYSICS_HZ = 60;
 const WORLD_WIDTH = 256;
 const WORLD_HEIGHT = 256;
 
