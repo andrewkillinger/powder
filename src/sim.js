@@ -1,36 +1,474 @@
-import { EMPTY, SAND } from './elements.js';
+import { ELEMENTS, EMPTY, WALL, SAND, WATER } from './elements.js';
 
 const DEFAULT_WORLD_WIDTH = 256;
 const DEFAULT_WORLD_HEIGHT = 256;
-const FLAG_MOVED_THIS_TICK = 1 << 1;
+
+const FLAG_MOVED_THIS_TICK = 1 << 0;
+const FLAG_SWAP_COOLDOWN = 1 << 1;
+const FLAG_SWAP_COOLDOWN_NEXT = 1 << 2;
 const CLEAR_MOVED_MASK = 0xff ^ FLAG_MOVED_THIS_TICK;
+const CLEAR_COOLDOWN_MASK = 0xff ^ FLAG_SWAP_COOLDOWN;
+const CLEAR_COOLDOWN_NEXT_MASK = 0xff ^ FLAG_SWAP_COOLDOWN_NEXT;
+
 const DEFAULT_STEP_SECONDS = 1 / 30;
+const WATER_SAND_DISPLACEMENT_PROBABILITY = 0.2;
+
+const rngState = {
+  seed: Math.floor(Math.random() * 0xffffffff) >>> 0,
+  rng: null,
+};
+
+const currentStep = {
+  rng: null,
+  frameParity: 0,
+  stats: null,
+};
+
+function mulberry32(seed) {
+  let t = seed >>> 0;
+  return function rng() {
+    t += 0x6d2b79f5;
+    let x = t;
+    x = Math.imul(x ^ (x >>> 15), x | 1);
+    x ^= x + Math.imul(x ^ (x >>> 7), x | 61);
+    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
 function normalizeDimension(value, fallback) {
   const numeric = Number(value);
-
   if (!Number.isFinite(numeric) || numeric <= 0) {
     return fallback;
   }
-
   const integer = Math.floor(numeric);
-
-  if (integer <= 0) {
+  if (!Number.isFinite(integer) || integer <= 0) {
     return fallback;
   }
-
   return integer;
 }
 
 function normalizeCoordinate(value) {
   const numeric = Number(value);
-
   if (!Number.isFinite(numeric)) {
     return NaN;
   }
-
   return Math.trunc(numeric);
 }
+
+function normalizeSeed(seed) {
+  const numeric = Number(seed);
+  if (!Number.isFinite(numeric)) {
+    return rngState.seed;
+  }
+  return Math.floor(Math.abs(numeric)) >>> 0;
+}
+
+function ensureRng(seed) {
+  const normalized = normalizeSeed(seed);
+  if (!rngState.rng || rngState.seed !== normalized) {
+    rngState.seed = normalized;
+    rngState.rng = mulberry32(normalized || 1);
+  }
+  return rngState.rng;
+}
+
+export function setSimulationSeed(seed) {
+  const normalized = normalizeSeed(seed);
+  rngState.seed = normalized;
+  rngState.rng = mulberry32(normalized || 1);
+  return normalized;
+}
+
+function getMeta(id) {
+  return ELEMENTS[id] || ELEMENTS[EMPTY];
+}
+
+function densityOf(id) {
+  const meta = getMeta(id);
+  return Number.isFinite(meta?.density) ? meta.density : 0;
+}
+
+export function isEmpty(id) {
+  return id === EMPTY;
+}
+
+export function isLiquid(id) {
+  return getMeta(id)?.state === 'liquid';
+}
+
+function isImmovable(id) {
+  return Boolean(getMeta(id)?.immovable);
+}
+
+function clearCellState(world, index) {
+  if (!world || !world.flags) {
+    return;
+  }
+  world.flags[index] = 0;
+  if (world.lastMoveDir) {
+    world.lastMoveDir[index] = 0;
+  }
+}
+
+export const UPDATERS = [];
+
+UPDATERS[EMPTY] = function noop() {};
+
+UPDATERS[WALL] = function wallUpdater() {};
+
+function trySwapInternal(world, sourceIndex, targetIndex, options) {
+  const cells = world.cells;
+  const flags = world.flags;
+
+  const sourceId = cells[sourceIndex];
+  const targetId = cells[targetIndex];
+
+  if (sourceId === targetId) {
+    return false;
+  }
+
+  if (isImmovable(sourceId)) {
+    return false;
+  }
+
+  if (targetId !== EMPTY && isImmovable(targetId)) {
+    return false;
+  }
+
+  if ((flags[sourceIndex] & FLAG_MOVED_THIS_TICK) !== 0) {
+    return false;
+  }
+
+  if ((flags[targetIndex] & FLAG_MOVED_THIS_TICK) !== 0) {
+    return false;
+  }
+
+  if ((flags[sourceIndex] & FLAG_SWAP_COOLDOWN) !== 0) {
+    return false;
+  }
+
+  if ((flags[targetIndex] & FLAG_SWAP_COOLDOWN) !== 0) {
+    return false;
+  }
+
+  const allowDenser = Boolean(options?.allowDenser);
+  const allowEqual = Boolean(options?.allowEqualDensity);
+
+  if (targetId !== EMPTY && !allowDenser) {
+    const sourceDensity = densityOf(sourceId);
+    const targetDensity = densityOf(targetId);
+
+    if (targetDensity > sourceDensity) {
+      return false;
+    }
+
+    if (!allowEqual && targetDensity === sourceDensity) {
+      return false;
+    }
+  }
+
+  cells[targetIndex] = sourceId;
+  cells[sourceIndex] = targetId;
+
+  flags[targetIndex] |= FLAG_MOVED_THIS_TICK;
+  flags[sourceIndex] |= FLAG_MOVED_THIS_TICK;
+
+  if (targetId !== EMPTY && densityOf(targetId) > densityOf(sourceId)) {
+    flags[targetIndex] |= FLAG_SWAP_COOLDOWN_NEXT;
+    flags[sourceIndex] |= FLAG_SWAP_COOLDOWN_NEXT;
+  } else if (options?.cooldown) {
+    flags[targetIndex] |= FLAG_SWAP_COOLDOWN_NEXT;
+    flags[sourceIndex] |= FLAG_SWAP_COOLDOWN_NEXT;
+  }
+
+  if (world.lastMoveDir) {
+    world.lastMoveDir[targetIndex] = options?.afterSwapDir ?? 0;
+    world.lastMoveDir[sourceIndex] = 0;
+  }
+
+  if (
+    currentStep.stats &&
+    ((sourceId === WATER && targetId === SAND) || (sourceId === SAND && targetId === WATER))
+  ) {
+    currentStep.stats.swaps = (currentStep.stats.swaps ?? 0) + 1;
+  }
+
+  return true;
+}
+
+export function trySwap(world, x1, y1, x2, y2, options = {}) {
+  if (!world || !world.cells || !world.flags) {
+    return false;
+  }
+
+  const width = Number(world.width) || 0;
+  const height = Number(world.height) || 0;
+
+  const ix1 = Math.trunc(x1);
+  const iy1 = Math.trunc(y1);
+  const ix2 = Math.trunc(x2);
+  const iy2 = Math.trunc(y2);
+
+  if (
+    !Number.isFinite(ix1) ||
+    !Number.isFinite(iy1) ||
+    !Number.isFinite(ix2) ||
+    !Number.isFinite(iy2)
+  ) {
+    return false;
+  }
+
+  if (ix1 < 0 || ix1 >= width || iy1 < 0 || iy1 >= height) {
+    return false;
+  }
+
+  if (ix2 < 0 || ix2 >= width || iy2 < 0 || iy2 >= height) {
+    return false;
+  }
+
+  if (ix1 === ix2 && iy1 === iy2) {
+    return false;
+  }
+
+  const sourceIndex = iy1 * width + ix1;
+  const targetIndex = iy2 * width + ix2;
+
+  return trySwapInternal(world, sourceIndex, targetIndex, options);
+}
+
+function updateSand(world, x, y) {
+  const width = world.width;
+  const height = world.height;
+  const index = y * width + x;
+  const belowY = y + 1;
+
+  const sandDensity = densityOf(SAND);
+
+  if (belowY < height) {
+    const belowIndex = index + width;
+    const belowId = world.cells[belowIndex];
+
+    if (isEmpty(belowId)) {
+      if (trySwapInternal(world, index, belowIndex, { afterSwapDir: 0 })) {
+        return;
+      }
+    } else if (!isImmovable(belowId) && densityOf(belowId) < sandDensity) {
+      if (trySwapInternal(world, index, belowIndex, { afterSwapDir: 0, cooldown: true })) {
+        return;
+      }
+    }
+  } else if (world.lastMoveDir) {
+    world.lastMoveDir[index] = 0;
+    return;
+  }
+
+  const parity = currentStep.frameParity;
+  const order = parity === 0 ? [-1, 1] : [1, -1];
+  const rng = currentStep.rng;
+  if (rng && rng() < 0.5) {
+    order.reverse();
+  }
+
+  for (let i = 0; i < order.length; i += 1) {
+    const dir = order[i];
+    const nx = x + dir;
+    const ny = y + 1;
+    if (nx < 0 || nx >= width || ny >= height) {
+      continue;
+    }
+
+    const targetIndex = ny * width + nx;
+    const targetId = world.cells[targetIndex];
+
+    if (isEmpty(targetId)) {
+      if (trySwapInternal(world, index, targetIndex, { afterSwapDir: dir })) {
+        return;
+      }
+    } else if (!isImmovable(targetId) && densityOf(targetId) < sandDensity) {
+      if (trySwapInternal(world, index, targetIndex, { afterSwapDir: dir, cooldown: true })) {
+        return;
+      }
+    }
+  }
+
+  if (world.lastMoveDir) {
+    world.lastMoveDir[index] = 0;
+  }
+}
+
+function chooseLateralOrder(previousDir, parity, rng) {
+  const order = [];
+
+  if (previousDir !== 0) {
+    order.push(previousDir);
+    const shouldFlip = rng ? rng() < 0.25 : false;
+    if (shouldFlip) {
+      order.unshift(-previousDir);
+    } else {
+      order.push(-previousDir);
+    }
+  } else {
+    const first = parity === 0 ? -1 : 1;
+    order.push(first, -first);
+    if (rng && rng() < 0.5) {
+      order.reverse();
+    }
+  }
+
+  return order.filter((value, index) => order.indexOf(value) === index);
+}
+
+function canFallThrough(id, waterDensity) {
+  if (isEmpty(id)) {
+    return true;
+  }
+  if (isLiquid(id)) {
+    return densityOf(id) <= waterDensity;
+  }
+  return densityOf(id) < waterDensity;
+}
+
+function updateWater(world, x, y) {
+  const width = world.width;
+  const height = world.height;
+  const index = y * width + x;
+  const waterDensity = densityOf(WATER);
+  const metadata = ELEMENTS[WATER] || {};
+  const lateralRunMax = Math.max(1, Math.trunc(metadata.lateralRunMax ?? 1));
+
+  const rng = currentStep.rng;
+  const parity = currentStep.frameParity;
+  const previousDir = world.lastMoveDir ? world.lastMoveDir[index] : 0;
+
+  const belowY = y + 1;
+  if (belowY < height) {
+    const belowIndex = index + width;
+    const belowId = world.cells[belowIndex];
+
+    if (isEmpty(belowId) || (isLiquid(belowId) && densityOf(belowId) < waterDensity)) {
+      if (trySwapInternal(world, index, belowIndex, { afterSwapDir: 0 })) {
+        return;
+      }
+    } else if (belowId === SAND) {
+      const probability = rng ? rng() : Math.random();
+      if (probability < WATER_SAND_DISPLACEMENT_PROBABILITY) {
+        if (
+          trySwapInternal(world, index, belowIndex, {
+            allowDenser: true,
+            afterSwapDir: 0,
+            cooldown: true,
+          })
+        ) {
+          if (world.lastMoveDir) {
+            world.lastMoveDir[belowIndex] = 0;
+          }
+          return;
+        }
+      }
+    }
+  } else {
+    if (world.lastMoveDir) {
+      world.lastMoveDir[index] = 0;
+    }
+    return;
+  }
+
+  const diagonalOrder = parity === 0 ? [-1, 1] : [1, -1];
+  if (rng && rng() < 0.35) {
+    diagonalOrder.reverse();
+  }
+
+  for (let i = 0; i < diagonalOrder.length; i += 1) {
+    const dir = diagonalOrder[i];
+    const nx = x + dir;
+    const ny = y + 1;
+    if (nx < 0 || nx >= width || ny >= height) {
+      continue;
+    }
+
+    const targetIndex = ny * width + nx;
+    const targetId = world.cells[targetIndex];
+
+    if (isEmpty(targetId) || (isLiquid(targetId) && densityOf(targetId) < waterDensity)) {
+      if (trySwapInternal(world, index, targetIndex, { afterSwapDir: dir })) {
+        return;
+      }
+    } else if (targetId === SAND) {
+      const probability = rng ? rng() : Math.random();
+      if (probability < WATER_SAND_DISPLACEMENT_PROBABILITY) {
+        if (
+          trySwapInternal(world, index, targetIndex, {
+            allowDenser: true,
+            afterSwapDir: dir,
+            cooldown: true,
+          })
+        ) {
+          if (world.lastMoveDir) {
+            world.lastMoveDir[targetIndex] = dir;
+          }
+          return;
+        }
+      }
+    }
+  }
+
+  const lateralOrder = chooseLateralOrder(previousDir, parity, rng);
+  let movedLaterally = false;
+
+  for (let i = 0; i < lateralOrder.length; i += 1) {
+    const dir = lateralOrder[i];
+    if (dir === 0) {
+      continue;
+    }
+
+    let bestIndex = -1;
+    for (let step = 1; step <= lateralRunMax; step += 1) {
+      const nx = x + dir * step;
+      if (nx < 0 || nx >= width) {
+        break;
+      }
+
+      const candidateIndex = y * width + nx;
+      const candidateId = world.cells[candidateIndex];
+
+      if (!isEmpty(candidateId)) {
+        break;
+      }
+
+      const supportY = y + 1;
+      if (supportY >= height) {
+        bestIndex = candidateIndex;
+        continue;
+      }
+
+      const supportIndex = candidateIndex + width;
+      const supportId = world.cells[supportIndex];
+      if (canFallThrough(supportId, waterDensity)) {
+        bestIndex = candidateIndex;
+      } else {
+        break;
+      }
+    }
+
+    if (bestIndex !== -1) {
+      if (
+        trySwapInternal(world, index, bestIndex, {
+          afterSwapDir: dir,
+        })
+      ) {
+        movedLaterally = true;
+        break;
+      }
+    }
+  }
+
+  if (world.lastMoveDir && !movedLaterally) {
+    world.lastMoveDir[index] = 0;
+  }
+}
+
+UPDATERS[SAND] = updateSand;
+UPDATERS[WATER] = updateWater;
 
 export function createWorld(width, height) {
   const normalizedWidth = normalizeDimension(width, DEFAULT_WORLD_WIDTH);
@@ -39,11 +477,11 @@ export function createWorld(width, height) {
 
   const cells = new Uint16Array(cellCount);
   const flags = new Uint8Array(cellCount);
+  const lastMoveDir = new Int8Array(cellCount);
 
   function inBounds(x, y) {
     const ix = normalizeCoordinate(x);
     const iy = normalizeCoordinate(y);
-
     return (
       Number.isFinite(ix) &&
       Number.isFinite(iy) &&
@@ -74,46 +512,48 @@ export function createWorld(width, height) {
     height: normalizedHeight,
     cells,
     flags,
+    lastMoveDir,
     idx,
     inBounds,
   };
 }
 
-function clearMovedFlags(world) {
+export function beginTick(world) {
   if (!world || !world.flags) {
     return;
   }
 
   const flags = world.flags;
-  const length = flags.length;
+  for (let i = 0; i < flags.length; i += 1) {
+    const hasNextCooldown = (flags[i] & FLAG_SWAP_COOLDOWN_NEXT) !== 0;
+    let nextFlags = flags[i] & CLEAR_MOVED_MASK;
+    nextFlags &= CLEAR_COOLDOWN_MASK;
+    nextFlags &= CLEAR_COOLDOWN_NEXT_MASK;
+    if (hasNextCooldown) {
+      nextFlags |= FLAG_SWAP_COOLDOWN;
+    }
+    flags[i] = nextFlags;
+  }
+}
 
-  for (let i = 0; i < length; i += 1) {
+export function endTick(world) {
+  if (!world || !world.flags) {
+    return;
+  }
+
+  const flags = world.flags;
+  for (let i = 0; i < flags.length; i += 1) {
     flags[i] &= CLEAR_MOVED_MASK;
   }
 }
 
-function moveCell(cells, flags, fromIndex, toIndex) {
-  cells[toIndex] = cells[fromIndex];
-  cells[fromIndex] = EMPTY;
-  flags[toIndex] = (flags[toIndex] & CLEAR_MOVED_MASK) | FLAG_MOVED_THIS_TICK;
-  flags[fromIndex] &= CLEAR_MOVED_MASK;
-}
-
-export function beginTick(world) {
-  clearMovedFlags(world);
-}
-
-export function endTick(world) {
-  clearMovedFlags(world);
-}
-
-export function step(world) {
+export function step(world, context = {}) {
   if (!world || !world.cells || !world.flags) {
     return;
   }
 
-  const width = Math.trunc(Number(world.width) || 0);
-  const height = Math.trunc(Number(world.height) || 0);
+  const width = Number(world.width) || 0;
+  const height = Number(world.height) || 0;
 
   if (width <= 0 || height <= 0) {
     return;
@@ -122,13 +562,21 @@ export function step(world) {
   const cells = world.cells;
   const flags = world.flags;
 
+  const state = context.state ?? context ?? {};
+  const parity = (Number(state.frame) || 0) & 1;
+
+  currentStep.frameParity = parity;
+  currentStep.rng = ensureRng(state.seed);
+  currentStep.stats = context.stats ?? null;
+
   for (let y = height - 1; y >= 0; y -= 1) {
     const rowOffset = y * width;
 
     for (let x = 0; x < width; x += 1) {
       const index = rowOffset + x;
+      const elementId = cells[index];
 
-      if (cells[index] !== SAND) {
+      if (elementId === EMPTY) {
         continue;
       }
 
@@ -136,41 +584,16 @@ export function step(world) {
         continue;
       }
 
-      const belowY = y + 1;
+      const updater = UPDATERS[elementId];
 
-      if (belowY >= height) {
-        continue;
-      }
-
-      const belowIndex = index + width;
-
-      if (cells[belowIndex] === EMPTY) {
-        moveCell(cells, flags, index, belowIndex);
-        continue;
-      }
-
-      const canMoveLeft = x > 0 && cells[belowIndex - 1] === EMPTY;
-      const canMoveRight = x + 1 < width && cells[belowIndex + 1] === EMPTY;
-
-      if (canMoveLeft && canMoveRight) {
-        if (Math.random() < 0.5) {
-          moveCell(cells, flags, index, belowIndex - 1);
-        } else {
-          moveCell(cells, flags, index, belowIndex + 1);
-        }
-        continue;
-      }
-
-      if (canMoveLeft) {
-        moveCell(cells, flags, index, belowIndex - 1);
-        continue;
-      }
-
-      if (canMoveRight) {
-        moveCell(cells, flags, index, belowIndex + 1);
+      if (typeof updater === 'function') {
+        updater(world, x, y);
       }
     }
   }
+
+  currentStep.rng = null;
+  currentStep.stats = null;
 }
 
 export function paintCircle(world, x, y, radius, elementId) {
@@ -186,6 +609,9 @@ export function paintCircle(world, x, y, radius, elementId) {
   }
 
   const cells = world.cells;
+  const flags = world.flags;
+  const lastMoveDir = world.lastMoveDir;
+
   const centerX = Math.trunc(Number.isFinite(x) ? x : NaN);
   const centerY = Math.trunc(Number.isFinite(y) ? y : NaN);
 
@@ -194,12 +620,10 @@ export function paintCircle(world, x, y, radius, elementId) {
   }
 
   let effectiveRadius = Math.trunc(Number.isFinite(radius) ? radius : 0);
-
   if (effectiveRadius < 0) {
     effectiveRadius = 0;
   }
 
-  const squaredRadius = effectiveRadius * effectiveRadius;
   let changed = 0;
 
   if (effectiveRadius === 0) {
@@ -207,11 +631,17 @@ export function paintCircle(world, x, y, radius, elementId) {
       const index = centerY * width + centerX;
       if (cells[index] !== elementId) {
         cells[index] = elementId;
+        flags[index] = 0;
+        if (lastMoveDir) {
+          lastMoveDir[index] = 0;
+        }
         changed += 1;
       }
     }
     return changed;
   }
+
+  const squaredRadius = effectiveRadius * effectiveRadius;
 
   for (let offsetY = -effectiveRadius; offsetY <= effectiveRadius; offsetY += 1) {
     const sampleY = centerY + offsetY;
@@ -237,6 +667,10 @@ export function paintCircle(world, x, y, radius, elementId) {
       const index = sampleY * width + sampleX;
       if (cells[index] !== elementId) {
         cells[index] = elementId;
+        flags[index] = 0;
+        if (lastMoveDir) {
+          lastMoveDir[index] = 0;
+        }
         changed += 1;
       }
     }
@@ -265,4 +699,102 @@ export function createSimulation(options = {}) {
   }
 
   return { state, update };
+}
+
+function paintRectangle(world, startX, startY, sizeX, sizeY, elementId) {
+  const width = world.width;
+  const height = world.height;
+  const x0 = Math.max(0, Math.trunc(startX));
+  const y0 = Math.max(0, Math.trunc(startY));
+  const x1 = Math.min(width, x0 + Math.max(0, Math.trunc(sizeX)));
+  const y1 = Math.min(height, y0 + Math.max(0, Math.trunc(sizeY)));
+
+  for (let y = y0; y < y1; y += 1) {
+    const rowOffset = y * width;
+    for (let x = x0; x < x1; x += 1) {
+      const index = rowOffset + x;
+      world.cells[index] = elementId;
+      world.flags[index] = 0;
+      if (world.lastMoveDir) {
+        world.lastMoveDir[index] = 0;
+      }
+    }
+  }
+}
+
+export function runWaterOverSandTest(world, options = {}) {
+  if (!world || !world.cells || !world.flags) {
+    throw new Error('A valid world is required for the stress test.');
+  }
+
+  const frames = Math.max(1, Math.trunc(options.frames ?? 120));
+  world.cells.fill(EMPTY);
+  world.flags.fill(0);
+  if (world.lastMoveDir) {
+    world.lastMoveDir.fill(0);
+  }
+
+  const width = world.width;
+  const height = world.height;
+
+  const bedWidth = Math.min(16, width);
+  const bedHeight = Math.min(10, height);
+  const bedStartX = Math.floor((width - bedWidth) / 2);
+  const bedStartY = height - bedHeight;
+
+  paintRectangle(world, bedStartX, bedStartY, bedWidth, bedHeight, SAND);
+
+  const waterWidth = Math.min(10, width);
+  const waterHeight = Math.min(6, Math.max(0, bedStartY));
+  const waterStartX = Math.floor((width - waterWidth) / 2);
+  const waterStartY = Math.max(0, bedStartY - waterHeight);
+
+  paintRectangle(world, waterStartX, waterStartY, waterWidth, waterHeight, WATER);
+
+  const stats = options.stats ?? { swaps: 0 };
+  stats.swaps = 0;
+
+  const stepState = {
+    seed: options.seed ?? rngState.seed,
+    frame: Number.isFinite(options.frame) ? Math.trunc(options.frame) : 0,
+  };
+
+  for (let i = 0; i < frames; i += 1) {
+    beginTick(world);
+    step(world, { state: stepState, stats });
+    endTick(world);
+    stepState.frame += 1;
+  }
+
+  let settled = 0;
+  let minX = width;
+  let maxX = -1;
+
+  for (let index = 0; index < world.cells.length; index += 1) {
+    if (world.cells[index] !== WATER) {
+      continue;
+    }
+
+    const y = Math.floor(index / width);
+    const x = index % width;
+
+    if (y + 1 >= height || !isEmpty(world.cells[index + width])) {
+      settled += 1;
+    }
+
+    if (x < minX) {
+      minX = x;
+    }
+    if (x > maxX) {
+      maxX = x;
+    }
+  }
+
+  const lateralSpread = maxX >= minX ? maxX - minX + 1 : 0;
+
+  return {
+    settled,
+    lateralSpread,
+    swaps: stats.swaps ?? 0,
+  };
 }
