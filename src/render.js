@@ -57,7 +57,7 @@ export function createRenderer(canvas, world, palette) {
     }
   }
 
-  function draw(targetWorld = currentWorld, _info = undefined) {
+  function draw(targetWorld = currentWorld, info = undefined) {
     if (!targetWorld) {
       return;
     }
@@ -75,17 +75,58 @@ export function createRenderer(canvas, world, palette) {
       const displayHeight = canvas.height / dpr;
       ctx.clearRect(0, 0, displayWidth, displayHeight);
       ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(
-        offscreen,
-        0,
-        0,
-        offscreen.width,
-        offscreen.height,
-        0,
-        0,
-        displayWidth,
-        displayHeight,
-      );
+      const viewport = info && typeof info === 'object' ? info.viewport ?? null : null;
+
+      if (viewport) {
+        const minScale = Number.isFinite(viewport.minScale) ? Math.max(1, viewport.minScale) : 1;
+        const maxScale = Number.isFinite(viewport.maxScale)
+          ? Math.max(minScale, viewport.maxScale)
+          : Math.max(minScale, Number(viewport.scale) || minScale);
+        let scale = Number(viewport.scale);
+        if (!Number.isFinite(scale) || scale <= 0) {
+          scale = 1;
+        }
+        scale = Math.max(minScale, Math.min(maxScale, scale));
+        let viewWidth = offscreen.width / scale;
+        let viewHeight = offscreen.height / scale;
+        if (!Number.isFinite(viewWidth) || viewWidth <= 0) {
+          viewWidth = offscreen.width;
+        }
+        if (!Number.isFinite(viewHeight) || viewHeight <= 0) {
+          viewHeight = offscreen.height;
+        }
+
+        const maxOffsetX = Math.max(0, offscreen.width - viewWidth);
+        const maxOffsetY = Math.max(0, offscreen.height - viewHeight);
+        const offsetX = Number.isFinite(viewport.offsetX) ? viewport.offsetX : 0;
+        const offsetY = Number.isFinite(viewport.offsetY) ? viewport.offsetY : 0;
+        const clampedOffsetX = Math.max(0, Math.min(maxOffsetX, offsetX));
+        const clampedOffsetY = Math.max(0, Math.min(maxOffsetY, offsetY));
+
+        ctx.drawImage(
+          offscreen,
+          clampedOffsetX,
+          clampedOffsetY,
+          viewWidth,
+          viewHeight,
+          0,
+          0,
+          displayWidth,
+          displayHeight,
+        );
+      } else {
+        ctx.drawImage(
+          offscreen,
+          0,
+          0,
+          offscreen.width,
+          offscreen.height,
+          0,
+          0,
+          displayWidth,
+          displayHeight,
+        );
+      }
     }
   }
 

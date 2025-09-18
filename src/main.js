@@ -28,6 +28,8 @@ const SOFT_PARTICLE_CAP = 60000;
 const PHYSICS_HZ = 60;
 const WORLD_WIDTH = 256;
 const WORLD_HEIGHT = 256;
+const VIEWPORT_MIN_SCALE = 1;
+const VIEWPORT_MAX_SCALE = 4;
 
 // State root – must exist before anything runs
 export const Game = (window.Game = {
@@ -38,6 +40,7 @@ export const Game = (window.Game = {
     erasing: false,
     seed: 1337,
     frame: 0,
+    zoom: 1,
   },
   world: null,
   renderer: null,
@@ -50,6 +53,13 @@ export const Game = (window.Game = {
   },
   limits: {
     softCap: SOFT_PARTICLE_CAP,
+  },
+  viewport: {
+    scale: 1,
+    offsetX: 0,
+    offsetY: 0,
+    minScale: VIEWPORT_MIN_SCALE,
+    maxScale: VIEWPORT_MAX_SCALE,
   },
 });
 
@@ -151,19 +161,141 @@ function installQC() {
   };
 }
 
+function clampViewport(viewport, world) {
+  if (!viewport || !world) {
+    return;
+  }
+
+  const minScale = Number.isFinite(viewport.minScale)
+    ? Math.max(VIEWPORT_MIN_SCALE, viewport.minScale)
+    : VIEWPORT_MIN_SCALE;
+  const maxScale = Number.isFinite(viewport.maxScale)
+    ? Math.max(minScale, viewport.maxScale)
+    : VIEWPORT_MAX_SCALE;
+
+  let scale = Number.isFinite(viewport.scale) && viewport.scale > 0 ? viewport.scale : minScale;
+  scale = Math.max(minScale, Math.min(maxScale, scale));
+
+  viewport.minScale = minScale;
+  viewport.maxScale = maxScale;
+  viewport.scale = scale;
+
+  const viewWidth = world.width / scale;
+  const viewHeight = world.height / scale;
+  const maxOffsetX = Math.max(0, world.width - viewWidth);
+  const maxOffsetY = Math.max(0, world.height - viewHeight);
+
+  const offsetX = Number.isFinite(viewport.offsetX) ? viewport.offsetX : 0;
+  const offsetY = Number.isFinite(viewport.offsetY) ? viewport.offsetY : 0;
+
+  viewport.offsetX = Math.max(0, Math.min(maxOffsetX, offsetX));
+  viewport.offsetY = Math.max(0, Math.min(maxOffsetY, offsetY));
+}
+
+function syncViewport(world = Game.world) {
+  const viewport = Game.viewport;
+  if (!viewport || !world) {
+    return viewport;
+  }
+
+  const previousZoom = Game.state.zoom;
+  clampViewport(viewport, world);
+  Game.state.zoom = viewport.scale;
+  if (previousZoom !== viewport.scale) {
+    emitState();
+  }
+  return viewport;
+}
+
+function applyViewportTransform(transform = {}, world = Game.world) {
+  const viewport = Game.viewport;
+  if (!viewport || !world) {
+    return viewport;
+  }
+
+  if (Number.isFinite(transform.scale)) {
+    viewport.scale = transform.scale;
+  }
+  if (Number.isFinite(transform.offsetX)) {
+    viewport.offsetX = transform.offsetX;
+  }
+  if (Number.isFinite(transform.offsetY)) {
+    viewport.offsetY = transform.offsetY;
+  }
+
+  return syncViewport(world);
+}
+
+function setViewportScale(scale, { canvas, centerX, centerY, anchorWorld } = {}) {
+  const world = Game.world;
+  const viewport = Game.viewport;
+  if (!world || !viewport) {
+    return viewport;
+  }
+
+  const minScale = viewport.minScale ?? VIEWPORT_MIN_SCALE;
+  const maxScale = viewport.maxScale ?? VIEWPORT_MAX_SCALE;
+  let nextScale = Number(scale);
+  if (!Number.isFinite(nextScale) || nextScale <= 0) {
+    nextScale = viewport.scale;
+  }
+  nextScale = Math.max(minScale, Math.min(maxScale, nextScale));
+
+  const rect = canvas?.getBoundingClientRect?.();
+  if (rect && rect.width > 0 && rect.height > 0) {
+    const localX = Number.isFinite(centerX) ? (centerX - rect.left) / rect.width : 0.5;
+    const localY = Number.isFinite(centerY) ? (centerY - rect.top) / rect.height : 0.5;
+
+    if (Number.isFinite(localX) && Number.isFinite(localY)) {
+      const currentScale = viewport.scale || 1;
+      const currentViewWidth = world.width / currentScale;
+      const currentViewHeight = world.height / currentScale;
+      const fallbackAnchor = {
+        x: viewport.offsetX + localX * currentViewWidth,
+        y: viewport.offsetY + localY * currentViewHeight,
+      };
+      const anchor =
+        anchorWorld && Number.isFinite(anchorWorld.x) && Number.isFinite(anchorWorld.y)
+          ? anchorWorld
+          : fallbackAnchor;
+
+      const viewWidth = world.width / nextScale;
+      const viewHeight = world.height / nextScale;
+
+      const offsetX = anchor.x - localX * viewWidth;
+      const offsetY = anchor.y - localY * viewHeight;
+
+      return applyViewportTransform({ scale: nextScale, offsetX, offsetY }, world);
+    }
+  }
+
+  return applyViewportTransform({ scale: nextScale }, world);
+}
+
 function pointerToWorld(canvas, event) {
   const world = Game.world;
-  if (!world) {
+  const viewport = Game.viewport;
+  if (!world || !viewport) {
+    return null;
+  }
+  const clientX = Number(event?.clientX);
+  const clientY = Number(event?.clientY);
+  if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) {
     return null;
   }
   const rect = canvas.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) {
     return null;
   }
-  const scaleX = world.width / rect.width;
-  const scaleY = world.height / rect.height;
-  const x = (event.clientX - rect.left) * scaleX;
-  const y = (event.clientY - rect.top) * scaleY;
+  const localX = (clientX - rect.left) / rect.width;
+  const localY = (clientY - rect.top) / rect.height;
+  if (!Number.isFinite(localX) || !Number.isFinite(localY)) {
+    return null;
+  }
+  const viewWidth = world.width / viewport.scale;
+  const viewHeight = world.height / viewport.scale;
+  const x = viewport.offsetX + localX * viewWidth;
+  const y = viewport.offsetY + localY * viewHeight;
   if (!Number.isFinite(x) || !Number.isFinite(y)) {
     return null;
   }
@@ -187,46 +319,214 @@ function paintAt(worldX, worldY) {
 }
 
 function attachPointerHandlers(canvas) {
-  const pointerState = { active: false };
+  const pointerState = {
+    activePointers: new Map(),
+    paintingPointerId: null,
+    pendingTap: null,
+    gesture: null,
+  };
 
-  function handlePointer(event) {
-    const coords = pointerToWorld(canvas, event);
+  function handlePointer(point) {
+    if (!point) {
+      return;
+    }
+    const coords = pointerToWorld(canvas, point);
     if (!coords) {
       return;
     }
     paintAt(coords.x, coords.y);
   }
 
-  canvas.addEventListener('pointerdown', (event) => {
-    if (event.button !== 0) {
+  function updatePointer(event) {
+    pointerState.activePointers.set(event.pointerId, {
+      pointerType: event.pointerType,
+      clientX: event.clientX,
+      clientY: event.clientY,
+    });
+  }
+
+  function removePointer(pointerId) {
+    pointerState.activePointers.delete(pointerId);
+    if (pointerState.activePointers.size < 2) {
+      pointerState.gesture = null;
+    }
+  }
+
+  function startGestureIfNeeded() {
+    if (pointerState.activePointers.size < 2) {
+      pointerState.gesture = null;
       return;
     }
-    pointerState.active = true;
+
+    const pointers = Array.from(pointerState.activePointers.values());
+    if (pointers.length < 2) {
+      return;
+    }
+
+    const [first, second] = pointers;
+    if (!first || !second) {
+      return;
+    }
+
+    const dx = second.clientX - first.clientX;
+    const dy = second.clientY - first.clientY;
+    const distance = Math.hypot(dx, dy) || 1;
+    const centerX = (first.clientX + second.clientX) / 2;
+    const centerY = (first.clientY + second.clientY) / 2;
+    const anchor = pointerToWorld(canvas, { clientX: centerX, clientY: centerY });
+
+    pointerState.gesture = {
+      startScale: Game.viewport?.scale ?? 1,
+      startDistance: distance,
+      anchorWorld:
+        anchor && Number.isFinite(anchor.x) && Number.isFinite(anchor.y)
+          ? anchor
+          : (() => {
+              const viewport = Game.viewport;
+              const world = Game.world;
+              if (!viewport || !world) {
+                return { x: 0, y: 0 };
+              }
+              const viewWidth = world.width / (viewport.scale || 1);
+              const viewHeight = world.height / (viewport.scale || 1);
+              return {
+                x: viewport.offsetX + viewWidth / 2,
+                y: viewport.offsetY + viewHeight / 2,
+              };
+            })(),
+    };
+
+    pointerState.paintingPointerId = null;
+    pointerState.pendingTap = null;
+  }
+
+  function updateGesture() {
+    if (!pointerState.gesture || pointerState.activePointers.size < 2) {
+      return;
+    }
+
+    const pointers = Array.from(pointerState.activePointers.values());
+    if (pointers.length < 2) {
+      return;
+    }
+
+    const [first, second] = pointers;
+    if (!first || !second) {
+      return;
+    }
+
+    const dx = second.clientX - first.clientX;
+    const dy = second.clientY - first.clientY;
+    const distance = Math.hypot(dx, dy) || pointerState.gesture.startDistance || 1;
+    const centerX = (first.clientX + second.clientX) / 2;
+    const centerY = (first.clientY + second.clientY) / 2;
+
+    const factor =
+      pointerState.gesture.startDistance > 0
+        ? distance / pointerState.gesture.startDistance
+        : 1;
+    const rawScale = pointerState.gesture.startScale * (Number.isFinite(factor) ? factor : 1);
+
+    setViewportScale(rawScale, {
+      canvas,
+      centerX,
+      centerY,
+      anchorWorld: pointerState.gesture.anchorWorld,
+    });
+  }
+
+  canvas.addEventListener('pointerdown', (event) => {
+    const isMouse = event.pointerType === 'mouse';
+    const isPen = event.pointerType === 'pen';
+    if (isMouse && event.button !== 0) {
+      return;
+    }
+
+    updatePointer(event);
+
     try {
       canvas.setPointerCapture(event.pointerId);
     } catch (error) {
       // ignore capture errors from synthetic events
     }
+
     event.preventDefault();
-    handlePointer(event);
+
+    if (pointerState.activePointers.size >= 2) {
+      pointerState.paintingPointerId = null;
+      pointerState.pendingTap = null;
+      startGestureIfNeeded();
+      return;
+    }
+
+    pointerState.gesture = null;
+
+    if (isMouse || isPen) {
+      pointerState.paintingPointerId = event.pointerId;
+      pointerState.pendingTap = null;
+      handlePointer(event);
+      return;
+    }
+
+    pointerState.paintingPointerId = event.pointerId;
+    pointerState.pendingTap = { clientX: event.clientX, clientY: event.clientY };
   });
 
   canvas.addEventListener('pointermove', (event) => {
-    if (!pointerState.active) {
+    if (!pointerState.activePointers.has(event.pointerId)) {
       return;
     }
+
+    updatePointer(event);
+
+    if (pointerState.activePointers.size >= 2) {
+      event.preventDefault();
+      if (!pointerState.gesture) {
+        startGestureIfNeeded();
+      }
+      updateGesture();
+      return;
+    }
+
+    if (pointerState.paintingPointerId !== event.pointerId) {
+      return;
+    }
+
     event.preventDefault();
+
+    if (pointerState.pendingTap) {
+      handlePointer(pointerState.pendingTap);
+      pointerState.pendingTap = null;
+    }
+
     handlePointer(event);
   });
 
-  const endPointer = (event) => {
-    pointerState.active = false;
+  function endPointer(event) {
+    if (!pointerState.activePointers.has(event.pointerId)) {
+      pointerState.pendingTap = null;
+      pointerState.paintingPointerId = null;
+      return;
+    }
+
+    if (pointerState.pendingTap && pointerState.paintingPointerId === event.pointerId) {
+      handlePointer(pointerState.pendingTap);
+    }
+
+    pointerState.pendingTap = null;
+
+    removePointer(event.pointerId);
+
+    if (pointerState.paintingPointerId === event.pointerId) {
+      pointerState.paintingPointerId = null;
+    }
+
     try {
       canvas.releasePointerCapture(event.pointerId);
     } catch (error) {
       // ignore
     }
-  };
+  }
 
   canvas.addEventListener('pointerup', endPointer);
   canvas.addEventListener('pointercancel', endPointer);
@@ -302,10 +602,11 @@ export async function start() {
 
   const world = createWorld(WORLD_WIDTH, WORLD_HEIGHT);
   Game.world = world;
+  syncViewport(world);
 
   const renderer = createRenderer(canvas, world, PALETTE);
   Game.renderer = renderer;
-  renderer.draw(world);
+  renderer.draw(world, { viewport: Game.viewport });
 
   const overlay = createOverlay();
   Game.hud = {
@@ -321,10 +622,17 @@ export async function start() {
     onPauseToggle: () => setPaused(),
     onClear: () => {
       clearWorld();
-      renderer.draw(Game.world);
+      renderer.draw(Game.world, { viewport: Game.viewport });
       updateOverlay(overlay, { fps: Game.metrics.fps, count: Game.metrics.particles });
     },
     onBrushChange: (value) => setBrushSize(value),
+    onZoomChange: (level) => {
+      const rectNow = canvas.getBoundingClientRect();
+      const centerX = rectNow.left + rectNow.width / 2;
+      const centerY = rectNow.top + rectNow.height / 2;
+      const anchor = pointerToWorld(canvas, { clientX: centerX, clientY: centerY });
+      setViewportScale(level, { canvas, centerX, centerY, anchorWorld: anchor });
+    },
     onElementOpen: (id) => {
       setCurrentElement(id);
       setEraser(false);
@@ -349,7 +657,8 @@ export async function start() {
     if (ctx) {
       ctx.setTransform(nextDpr, 0, 0, nextDpr, 0, 0);
     }
-    renderer.draw(Game.world);
+    syncViewport(Game.world);
+    renderer.draw(Game.world, { viewport: Game.viewport });
   });
 
   installQC();
@@ -399,7 +708,7 @@ export async function start() {
     }
 
     const count = refreshParticleCount(Game.world);
-    renderer.draw(Game.world, { fps, count });
+    renderer.draw(Game.world, { fps, count, viewport: Game.viewport });
     updateOverlay(overlay, { fps, count });
     requestAnimationFrame(raf);
   }

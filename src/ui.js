@@ -103,6 +103,17 @@ function injectStyles() {
       font-size: 0.9rem;
     }
 
+    #${TOOLBAR_ID} .zoom-controls {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+
+    #${TOOLBAR_ID} .zoom-controls button {
+      min-width: 56px;
+      font-weight: 600;
+    }
+
     #${MENU_ID} {
       position: fixed;
       inset: 0;
@@ -607,6 +618,7 @@ export function initUI({
   onPauseToggle,
   onClear,
   onBrushChange,
+  onZoomChange,
   onElementOpen,
   onEraserToggle,
 }) {
@@ -668,11 +680,32 @@ export function initUI({
 
   brushLabel.append(brushInput, brushValue);
 
+  const zoomControls = document.createElement('div');
+  zoomControls.className = 'zoom-controls';
+  zoomControls.setAttribute('role', 'group');
+  zoomControls.setAttribute('aria-label', 'Zoom level');
+  const zoomButtons = [];
+  [1, 2, 4].forEach((level) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = `${level}x`;
+    button.dataset.zoomLevel = String(level);
+    button.setAttribute('aria-pressed', 'false');
+    button.setAttribute('aria-label', `Set zoom to ${level}x`);
+    button.addEventListener('click', () => {
+      if (typeof onZoomChange === 'function') {
+        onZoomChange(level);
+      }
+    });
+    zoomControls.appendChild(button);
+    zoomButtons.push({ level, button });
+  });
+
   const eraserButton = document.createElement('button');
   eraserButton.type = 'button';
   eraserButton.textContent = 'Eraser';
 
-  toolbar.append(elementButton, pauseButton, clearButton, brushLabel, eraserButton);
+  toolbar.append(elementButton, pauseButton, clearButton, brushLabel, zoomControls, eraserButton);
   document.body.appendChild(toolbar);
 
   const availableElements = (elements || []).filter(Boolean);
@@ -751,6 +784,13 @@ export function initUI({
       elementButton.setAttribute('aria-label', 'Choose element');
       elementButton.title = 'Choose element';
     }
+
+    const zoomLevel = Number(state.zoom);
+    zoomButtons.forEach(({ level, button }) => {
+      const active = Number.isFinite(zoomLevel) && Math.abs(zoomLevel - level) < 0.05;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
 
     elementPicker.updateSelection(state.currentElementId);
     pauseButton.classList.toggle('active', Boolean(state.paused));
