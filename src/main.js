@@ -1143,7 +1143,7 @@ export async function start() {
   }, 1000 / PHYSICS_HZ);
   Game.physicsHandle = physics;
 
-  console.info('[Materials] Boot OK — 20 reserved, 2 implemented, interactions router active');
+  console.info('[Materials] Boot OK — interactions router active');
 }
 
 document.addEventListener('DOMContentLoaded', start, { once: true });
