@@ -3,10 +3,17 @@ import {
   WALL,
   SAND,
   WET_SAND,
+  GUNPOWDER,
+  WET_GUNPOWDER,
   WATER,
   OIL,
+  ACID,
   FIRE,
+  STEAM,
   GLASS,
+  WOOD,
+  DRY_ICE,
+  ICE,
   getMaterial,
 } from './elements.js';
 import { createInteractionRouter } from './interactions.js';
@@ -72,6 +79,18 @@ const WET_SAND_DRY_RATE = 2;
 const WET_SAND_EXTRA_DRY_RATE = 6;
 const WET_SAND_SLIDE_PROBABILITY = 0.35;
 const WET_SAND_DIAGONAL_PROBABILITY = 0.25;
+const WATER_LATERAL_RUN_CAP = 14;
+const WATER_PRESSURE_MAX_DEPTH = 6;
+const WATER_FREEZE_BONUS = 0.35;
+const WATER_PROPAGATE_FREEZE = 0.12;
+const WATER_HEAT_VAPOR_CHANCE = 0.18;
+const WATER_COLD_CONVERSION_CHANCE = 0.5;
+const STEAM_DEFAULT_LIFETIME = 160;
+const STEAM_CONDENSE_ON_WATER = 0.08;
+const STEAM_CONDENSE_ON_COLD = 0.65;
+const STEAM_SIDEWAYS_CHANCE = 0.35;
+const ICE_HEAT_MELT_CHANCE = 0.65;
+const ICE_AMBIENT_MELT_CHANCE = 0.003;
 
 const SURROUNDING_OFFSETS = [
   [0, -1],
@@ -329,6 +348,10 @@ export function isEmpty(id) {
 
 export function isLiquid(id) {
   return getMeta(id)?.state === 'liquid';
+}
+
+function isGas(id) {
+  return getMeta(id)?.state === 'gas';
 }
 
 function isImmovable(id) {
@@ -807,61 +830,7 @@ function chooseLateralOrder(previousDir, parity, rng) {
 }
 
 function updateGlass(world, x, y) {
-  const width = world.width;
-  const height = world.height;
-  const index = y * width + x;
-  const cells = world.cells;
-  const glassDensity = densityOf(GLASS);
-  const rng = currentStep.rng;
-
-  const belowY = y + 1;
-  if (belowY < height) {
-    const belowIndex = index + width;
-    const belowId = cells[belowIndex];
-
-    if (isEmpty(belowId)) {
-      if (trySwapInternal(world, index, belowIndex, { afterSwapDir: 0 })) {
-        return;
-      }
-    } else if (!isImmovable(belowId) && densityOf(belowId) < glassDensity) {
-      if (trySwapInternal(world, index, belowIndex, { afterSwapDir: 0, cooldown: true })) {
-        return;
-      }
-    }
-  } else {
-    if (world.lastMoveDir) {
-      world.lastMoveDir[index] = 0;
-    }
-    return;
-  }
-
-  const parity = currentStep.frameParity;
-  const diagonalOrder = parity === 0 ? [-1, 1] : [1, -1];
-  if (rng && rng() < 0.25) {
-    diagonalOrder.reverse();
-  }
-
-  for (let i = 0; i < diagonalOrder.length; i += 1) {
-    const dir = diagonalOrder[i];
-    const nx = x + dir;
-    const ny = y + 1;
-    if (nx < 0 || nx >= width || ny >= height) {
-      continue;
-    }
-
-    const targetIndex = ny * width + nx;
-    const targetId = cells[targetIndex];
-
-    if (isEmpty(targetId)) {
-      if (trySwapInternal(world, index, targetIndex, { afterSwapDir: dir, cooldown: true })) {
-        return;
-      }
-    }
-  }
-
-  if (world.lastMoveDir) {
-    world.lastMoveDir[index] = 0;
-  }
+  updateFallingSolid(world, x, y, GLASS);
 }
 
 function canFallThrough(id, waterDensity) {
@@ -874,6 +843,402 @@ function canFallThrough(id, waterDensity) {
   return densityOf(id) < waterDensity;
 }
 
+function computeWaterPressureDepth(world, x, y, maxDepth, referenceDensity) {
+  if (!world || !world.cells || maxDepth <= 0) {
+    return 0;
+  }
+  const width = world.width;
+  const cells = world.cells;
+  let depth = 0;
+  for (let i = 1; i <= maxDepth; i += 1) {
+    const ny = y - i;
+    if (ny < 0) {
+      break;
+    }
+    const neighborId = cells[ny * width + x];
+    if (!isLiquid(neighborId)) {
+      break;
+    }
+    if (densityOf(neighborId) >= referenceDensity) {
+      depth += 1;
+    } else {
+      break;
+    }
+  }
+  return depth;
+}
+
+function spawnSteam(world, index, lifetime = STEAM_DEFAULT_LIFETIME) {
+  if (!world) {
+    return;
+  }
+  transformCell(world, index, STEAM, lifetime);
+}
+
+function updateFallingSolid(world, x, y, id) {
+  const width = world.width;
+  const height = world.height;
+  const index = y * width + x;
+  const cells = world.cells;
+  const density = densityOf(id);
+  const rng = currentStep.rng;
+  const parity = currentStep.frameParity;
+
+  const belowY = y + 1;
+  if (belowY < height) {
+    const belowIndex = index + width;
+    const belowId = cells[belowIndex];
+    if (isEmpty(belowId)) {
+      if (trySwapInternal(world, index, belowIndex, { afterSwapDir: 0 })) {
+        return true;
+      }
+    } else if (!isImmovable(belowId) && densityOf(belowId) < density) {
+      if (
+        trySwapInternal(world, index, belowIndex, {
+          afterSwapDir: 0,
+          cooldown: true,
+        })
+      ) {
+        return true;
+      }
+    }
+  } else if (world.lastMoveDir) {
+    world.lastMoveDir[index] = 0;
+    return false;
+  }
+
+  const order = parity === 0 ? [-1, 1] : [1, -1];
+  if (rng && rng() < 0.25) {
+    order.reverse();
+  }
+
+  for (let i = 0; i < order.length; i += 1) {
+    const dir = order[i];
+    const nx = x + dir;
+    const ny = y + 1;
+    if (nx < 0 || nx >= width || ny >= height) {
+      continue;
+    }
+
+    const targetIndex = ny * width + nx;
+    const targetId = cells[targetIndex];
+    if (isEmpty(targetId)) {
+      if (
+        trySwapInternal(world, index, targetIndex, {
+          afterSwapDir: dir,
+          cooldown: true,
+        })
+      ) {
+        return true;
+      }
+    } else if (!isImmovable(targetId) && densityOf(targetId) < density) {
+      if (
+        trySwapInternal(world, index, targetIndex, {
+          afterSwapDir: dir,
+          cooldown: true,
+        })
+      ) {
+        return true;
+      }
+    }
+  }
+
+  if (world.lastMoveDir) {
+    world.lastMoveDir[index] = 0;
+  }
+  return false;
+}
+
+function updateFallingPowder(world, x, y, id) {
+  const width = world.width;
+  const height = world.height;
+  const index = y * width + x;
+  const cells = world.cells;
+  const density = densityOf(id);
+  const parity = currentStep.frameParity;
+  const rng = currentStep.rng;
+
+  const belowY = y + 1;
+  if (belowY < height) {
+    const belowIndex = index + width;
+    const belowId = cells[belowIndex];
+    if (isEmpty(belowId)) {
+      if (trySwapInternal(world, index, belowIndex, { afterSwapDir: 0 })) {
+        return;
+      }
+    } else if (!isImmovable(belowId) && densityOf(belowId) < density) {
+      if (
+        trySwapInternal(world, index, belowIndex, {
+          afterSwapDir: 0,
+          cooldown: true,
+        })
+      ) {
+        return;
+      }
+    }
+  } else if (world.lastMoveDir) {
+    world.lastMoveDir[index] = 0;
+    return;
+  }
+
+  const order = parity === 0 ? [-1, 1] : [1, -1];
+  if (rng && rng() < 0.35) {
+    order.reverse();
+  }
+
+  for (let i = 0; i < order.length; i += 1) {
+    const dir = order[i];
+    const nx = x + dir;
+    const ny = y + 1;
+    if (nx < 0 || nx >= width || ny >= height) {
+      continue;
+    }
+
+    const targetIndex = ny * width + nx;
+    const targetId = cells[targetIndex];
+    if (isEmpty(targetId)) {
+      if (trySwapInternal(world, index, targetIndex, { afterSwapDir: dir })) {
+        return;
+      }
+    } else if (!isImmovable(targetId) && densityOf(targetId) < density) {
+      if (
+        trySwapInternal(world, index, targetIndex, {
+          afterSwapDir: dir,
+          cooldown: true,
+        })
+      ) {
+        return;
+      }
+    }
+  }
+
+  if (world.lastMoveDir) {
+    world.lastMoveDir[index] = 0;
+  }
+}
+
+function updateIce(world, x, y) {
+  const width = world.width;
+  const height = world.height;
+  const index = y * width + x;
+  const cells = world.cells;
+
+  let touchingHeat = false;
+  let strongHeat = false;
+  let touchingCold = false;
+
+  for (let i = 0; i < SURROUNDING_OFFSETS.length; i += 1) {
+    const [dx, dy] = SURROUNDING_OFFSETS[i];
+    const nx = x + dx;
+    const ny = y + dy;
+    if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
+      continue;
+    }
+    const neighborIndex = ny * width + nx;
+    const neighborId = cells[neighborIndex];
+
+    if (neighborId === FIRE) {
+      touchingHeat = true;
+      strongHeat = true;
+      extinguishFire(world, neighborIndex);
+      spawnSteam(world, neighborIndex, Math.max(40, Math.trunc(STEAM_DEFAULT_LIFETIME / 2)));
+    } else if (neighborId === STEAM || neighborId === WATER) {
+      touchingHeat = true;
+    } else if (neighborId === DRY_ICE || neighborId === ICE) {
+      touchingCold = true;
+    }
+  }
+
+  const meltChance = strongHeat ? ICE_HEAT_MELT_CHANCE : ICE_HEAT_MELT_CHANCE * 0.5;
+  if (touchingHeat && randomChance(meltChance)) {
+    spawnSteam(world, index, Math.max(50, Math.trunc(STEAM_DEFAULT_LIFETIME / 3)));
+    transformCell(world, index, WATER);
+    return;
+  }
+
+  if (!touchingCold && randomChance(ICE_AMBIENT_MELT_CHANCE)) {
+    transformCell(world, index, WATER);
+    return;
+  }
+
+  updateFallingSolid(world, x, y, ICE);
+}
+
+function updateSteam(world, x, y) {
+  const width = world.width;
+  const height = world.height;
+  const index = y * width + x;
+  const cells = world.cells;
+  const lifetimes = world.lifetimes;
+  const steamDensity = densityOf(STEAM);
+  const parity = currentStep.frameParity;
+  const rng = currentStep.rng;
+
+  let lifetime = STEAM_DEFAULT_LIFETIME;
+  if (lifetimes) {
+    const stored = lifetimes[index];
+    lifetime = stored > 0 ? stored : STEAM_DEFAULT_LIFETIME;
+    lifetime = Math.max(0, lifetime - 1);
+  }
+
+  let nearCold = false;
+  let nearWater = false;
+
+  for (let i = 0; i < SURROUNDING_OFFSETS.length; i += 1) {
+    const [dx, dy] = SURROUNDING_OFFSETS[i];
+    const nx = x + dx;
+    const ny = y + dy;
+    if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
+      continue;
+    }
+    const neighborId = cells[ny * width + nx];
+    if (neighborId === WATER) {
+      nearWater = true;
+    } else if (neighborId === ICE || neighborId === DRY_ICE) {
+      nearCold = true;
+    }
+  }
+
+  if (nearCold && randomChance(STEAM_CONDENSE_ON_COLD)) {
+    transformCell(world, index, WATER);
+    return;
+  }
+  if (nearWater && randomChance(STEAM_CONDENSE_ON_WATER)) {
+    transformCell(world, index, WATER);
+    return;
+  }
+
+  if (nearCold) {
+    lifetime = Math.max(0, lifetime - 1);
+  }
+
+  const assignLifetime = (targetIndex) => {
+    if (lifetimes) {
+      lifetimes[targetIndex] = Math.max(0, Math.min(255, lifetime));
+    }
+  };
+
+  const aboveY = y - 1;
+  if (aboveY >= 0) {
+    const aboveIndex = index - width;
+    const aboveId = cells[aboveIndex];
+    if (isEmpty(aboveId)) {
+      if (
+        trySwapInternal(world, index, aboveIndex, {
+          afterSwapDir: 0,
+          allowDenser: true,
+          allowEqualDensity: true,
+        })
+      ) {
+        assignLifetime(aboveIndex);
+        return;
+      }
+    } else if (isGas(aboveId) && densityOf(aboveId) > steamDensity) {
+      if (
+        trySwapInternal(world, index, aboveIndex, {
+          afterSwapDir: 0,
+          allowDenser: true,
+          allowEqualDensity: true,
+        })
+      ) {
+        assignLifetime(aboveIndex);
+        return;
+      }
+    }
+  } else {
+    transformCell(world, index, WATER);
+    return;
+  }
+
+  const diagonalOrder = parity === 0 ? [-1, 1] : [1, -1];
+  if (rng && rng() < 0.4) {
+    diagonalOrder.reverse();
+  }
+
+  for (let i = 0; i < diagonalOrder.length; i += 1) {
+    const dir = diagonalOrder[i];
+    const nx = x + dir;
+    const ny = y - 1;
+    if (nx < 0 || nx >= width || ny < 0) {
+      continue;
+    }
+    const targetIndex = ny * width + nx;
+    const targetId = cells[targetIndex];
+    if (isEmpty(targetId)) {
+      if (
+        trySwapInternal(world, index, targetIndex, {
+          afterSwapDir: dir,
+          allowDenser: true,
+          allowEqualDensity: true,
+        })
+      ) {
+        assignLifetime(targetIndex);
+        return;
+      }
+    } else if (isGas(targetId) && densityOf(targetId) > steamDensity) {
+      if (
+        trySwapInternal(world, index, targetIndex, {
+          afterSwapDir: dir,
+          allowDenser: true,
+          allowEqualDensity: true,
+        })
+      ) {
+        assignLifetime(targetIndex);
+        return;
+      }
+    }
+  }
+
+  if (randomChance(STEAM_SIDEWAYS_CHANCE)) {
+    const lateralOrder = parity === 0 ? [1, -1] : [-1, 1];
+    if (rng && rng() < 0.5) {
+      lateralOrder.reverse();
+    }
+    for (let i = 0; i < lateralOrder.length; i += 1) {
+      const dir = lateralOrder[i];
+      const nx = x + dir;
+      if (nx < 0 || nx >= width) {
+        continue;
+      }
+      const targetIndex = y * width + nx;
+      const targetId = cells[targetIndex];
+      if (isEmpty(targetId)) {
+        if (
+          trySwapInternal(world, index, targetIndex, {
+            afterSwapDir: dir,
+            allowDenser: true,
+            allowEqualDensity: true,
+          })
+        ) {
+          assignLifetime(targetIndex);
+          return;
+        }
+      } else if (isGas(targetId) && densityOf(targetId) > steamDensity) {
+        if (
+          trySwapInternal(world, index, targetIndex, {
+            afterSwapDir: dir,
+            allowDenser: true,
+            allowEqualDensity: true,
+          })
+        ) {
+          assignLifetime(targetIndex);
+          return;
+        }
+      }
+    }
+  }
+
+  if (lifetime <= 0) {
+    transformCell(world, index, WATER);
+    return;
+  }
+
+  assignLifetime(index);
+  if (world.lastMoveDir) {
+    world.lastMoveDir[index] = 0;
+  }
+}
+
 function updateWater(world, x, y) {
   const width = world.width;
   const height = world.height;
@@ -882,11 +1247,30 @@ function updateWater(world, x, y) {
   const lifetimes = world.lifetimes;
   const waterDensity = densityOf(WATER);
   const metadata = getMeta(WATER) || {};
-  const lateralRunMax = Math.max(1, Math.trunc(metadata.lateralRunMax ?? 1));
+
+  const baseLateralRun = Math.max(1, Math.trunc(metadata.lateralRunMax ?? 1));
+  const pressureDepth = Math.max(
+    0,
+    Math.trunc(
+      Number.isFinite(metadata.pressureRange) ? metadata.pressureRange : WATER_PRESSURE_MAX_DEPTH,
+    ),
+  );
+  const freezeChance = clamp01(metadata.freezeChance ?? WATER_PROPAGATE_FREEZE);
+  const dryIceFreezeChance = clamp01(
+    metadata.dryIceFreezeChance ?? WATER_COLD_CONVERSION_CHANCE + WATER_FREEZE_BONUS,
+  );
+  const warmEvapChance = clamp01(metadata.warmEvaporateChance ?? WATER_HEAT_VAPOR_CHANCE);
+  const fallbackFireChance = Math.min(1, Math.max(warmEvapChance + 0.4, 0.65));
+  const fireEvapChance = clamp01(metadata.fireEvaporateChance ?? fallbackFireChance);
+  const acidDilutionChance = clamp01(metadata.acidDilutionChance ?? 0.3);
 
   const rng = currentStep.rng;
   const parity = currentStep.frameParity;
   const previousDir = world.lastMoveDir ? world.lastMoveDir[index] : 0;
+
+  let touchingDryIce = false;
+  let touchingIce = false;
+  let touchingHeat = false;
 
   for (let i = 0; i < SURROUNDING_OFFSETS.length; i += 1) {
     const [dx, dy] = SURROUNDING_OFFSETS[i];
@@ -911,7 +1295,62 @@ function updateWater(world, x, y) {
       transformCell(world, index, WET_SAND, WET_SAND_MAX_MOISTURE);
       return;
     }
+    if (neighborId === FIRE) {
+      touchingHeat = true;
+      extinguishFire(world, neighborIndex);
+      spawnSteam(world, neighborIndex, Math.max(40, Math.trunc(STEAM_DEFAULT_LIFETIME / 2)));
+      if (randomChance(fireEvapChance)) {
+        spawnSteam(world, index, STEAM_DEFAULT_LIFETIME);
+        return;
+      }
+      continue;
+    }
+    if (neighborId === ACID) {
+      if (randomChance(acidDilutionChance)) {
+        transformCell(world, neighborIndex, WATER);
+      }
+      continue;
+    }
+    if (neighborId === GUNPOWDER) {
+      transformCell(world, neighborIndex, WET_GUNPOWDER);
+      continue;
+    }
+    if (neighborId === DRY_ICE) {
+      touchingDryIce = true;
+      continue;
+    }
+    if (neighborId === ICE) {
+      touchingIce = true;
+      continue;
+    }
+    if (neighborId === STEAM) {
+      touchingHeat = true;
+    }
   }
+
+  const effectiveDryFreezeChance =
+    dryIceFreezeChance > 0 ? dryIceFreezeChance : WATER_COLD_CONVERSION_CHANCE;
+  if (touchingDryIce && randomChance(effectiveDryFreezeChance)) {
+    transformCell(world, index, ICE);
+    return;
+  }
+  if (!touchingDryIce && touchingIce && randomChance(Math.max(freezeChance, WATER_PROPAGATE_FREEZE))) {
+    transformCell(world, index, ICE);
+    return;
+  }
+  if (!touchingDryIce && touchingHeat && randomChance(Math.max(warmEvapChance, WATER_HEAT_VAPOR_CHANCE))) {
+    spawnSteam(world, index, STEAM_DEFAULT_LIFETIME);
+    return;
+  }
+
+  const pressureBonus =
+    pressureDepth > 0
+      ? Math.min(
+          WATER_PRESSURE_MAX_DEPTH,
+          computeWaterPressureDepth(world, x, y, pressureDepth, waterDensity),
+        )
+      : 0;
+  const lateralRunMax = Math.max(1, Math.min(WATER_LATERAL_RUN_CAP, baseLateralRun + pressureBonus));
 
   const belowY = y + 1;
   if (belowY < height) {
@@ -922,27 +1361,31 @@ function updateWater(world, x, y) {
       if (trySwapInternal(world, index, belowIndex, { afterSwapDir: 0 })) {
         return;
       }
+    } else if (belowId === WOOD) {
+      if (trySwapInternal(world, index, belowIndex, { afterSwapDir: 0, allowDenser: true })) {
+        return;
+      }
     } else if (belowId === SAND) {
-      const probability = rng ? rng() : Math.random();
-      if (probability < WATER_SAND_DISPLACEMENT_PROBABILITY) {
-        if (
-          trySwapInternal(world, index, belowIndex, {
-            allowDenser: true,
-            afterSwapDir: 0,
-            cooldown: true,
-          })
-        ) {
-          if (world.lastMoveDir) {
-            world.lastMoveDir[belowIndex] = 0;
-          }
-          return;
+      if (
+        randomChance(WATER_SAND_DISPLACEMENT_PROBABILITY) &&
+        trySwapInternal(world, index, belowIndex, {
+          allowDenser: true,
+          afterSwapDir: 0,
+          cooldown: true,
+        })
+      ) {
+        if (world.lastMoveDir) {
+          world.lastMoveDir[belowIndex] = 0;
         }
+        return;
       }
     } else if (belowId === WET_SAND) {
       if (lifetimes) {
         const refreshed = Math.min(255, WET_SAND_MAX_MOISTURE);
         lifetimes[belowIndex] = Math.max(lifetimes[belowIndex], refreshed);
       }
+    } else if (belowId === GUNPOWDER) {
+      transformCell(world, belowIndex, WET_GUNPOWDER);
     }
   } else {
     if (world.lastMoveDir) {
@@ -971,27 +1414,31 @@ function updateWater(world, x, y) {
       if (trySwapInternal(world, index, targetIndex, { afterSwapDir: dir })) {
         return;
       }
+    } else if (targetId === WOOD) {
+      if (trySwapInternal(world, index, targetIndex, { afterSwapDir: dir, allowDenser: true })) {
+        return;
+      }
     } else if (targetId === SAND) {
-      const probability = rng ? rng() : Math.random();
-      if (probability < WATER_SAND_DISPLACEMENT_PROBABILITY) {
-        if (
-          trySwapInternal(world, index, targetIndex, {
-            allowDenser: true,
-            afterSwapDir: dir,
-            cooldown: true,
-          })
-        ) {
-          if (world.lastMoveDir) {
-            world.lastMoveDir[targetIndex] = dir;
-          }
-          return;
+      if (
+        randomChance(WATER_SAND_DISPLACEMENT_PROBABILITY) &&
+        trySwapInternal(world, index, targetIndex, {
+          allowDenser: true,
+          afterSwapDir: dir,
+          cooldown: true,
+        })
+      ) {
+        if (world.lastMoveDir) {
+          world.lastMoveDir[targetIndex] = dir;
         }
+        return;
       }
     } else if (targetId === WET_SAND) {
       if (lifetimes) {
         const refreshed = Math.min(255, WET_SAND_MAX_MOISTURE);
         lifetimes[targetIndex] = Math.max(lifetimes[targetIndex], refreshed);
       }
+    } else if (targetId === GUNPOWDER) {
+      transformCell(world, targetIndex, WET_GUNPOWDER);
     }
   }
 
@@ -1034,11 +1481,7 @@ function updateWater(world, x, y) {
     }
 
     if (bestIndex !== -1) {
-      if (
-        trySwapInternal(world, index, bestIndex, {
-          afterSwapDir: dir,
-        })
-      ) {
+      if (trySwapInternal(world, index, bestIndex, { afterSwapDir: dir })) {
         movedLaterally = true;
         break;
       }
@@ -1368,6 +1811,10 @@ UPDATERS[WATER] = updateWater;
 UPDATERS[OIL] = updateOil;
 UPDATERS[FIRE] = updateFire;
 UPDATERS[GLASS] = updateGlass;
+UPDATERS[GUNPOWDER] = (world, x, y) => updateFallingPowder(world, x, y, GUNPOWDER);
+UPDATERS[WET_GUNPOWDER] = (world, x, y) => updateFallingPowder(world, x, y, WET_GUNPOWDER);
+UPDATERS[ICE] = updateIce;
+UPDATERS[STEAM] = updateSteam;
 
 export function createWorld(width, height) {
   const normalizedWidth = normalizeDimension(width, DEFAULT_WORLD_WIDTH);

@@ -8,12 +8,14 @@ export const MID = Object.freeze({
   BAKING_SODA: 11,
   PIXIE_DUST: 12,
   NANITE_POWDER: 13,
+  WET_GUNPOWDER: 15,
   // Gases
   OXYGEN: 20,
   HYDROGEN: 21,
   CARBON_DIOXIDE: 22,
   ETHEREAL_MIST: 23,
   ANTIMATTER_VAPOR: 24,
+  STEAM: 25,
   // Liquids
   WATER: 3,
   OIL: 30,
@@ -27,6 +29,7 @@ export const MID = Object.freeze({
   NEUTRONIUM_CORE: 43,
   PHILOSOPHERS_STONE: 44,
   GLASS: 45,
+  ICE: 46,
 });
 
 export const MCAT = Object.freeze({
@@ -94,6 +97,24 @@ export const MATERIALS = {
     },
   }),
   [MID.GUNPOWDER]: material(MID.GUNPOWDER, 'Gunpowder', MCAT.POWDER, C(60, 60, 60)),
+  [MID.WET_GUNPOWDER]: material(
+    MID.WET_GUNPOWDER,
+    'Wet Gunpowder',
+    MCAT.POWDER,
+    C(72, 84, 92),
+    {
+      implemented: true,
+      density: 1750,
+      state: 'powder',
+      props: {
+        immovable: false,
+        viscosity: 5,
+        lateralRunMax: 1,
+        buoyancy: -2,
+        inert: true,
+      },
+    },
+  ),
   [MID.BAKING_SODA]: material(MID.BAKING_SODA, 'Baking Soda', MCAT.POWDER, C(235, 235, 235)),
   [MID.PIXIE_DUST]: material(MID.PIXIE_DUST, 'Pixie Dust', MCAT.POWDER, C(210, 240, 255)),
   [MID.NANITE_POWDER]: material(MID.NANITE_POWDER, 'Nanite Powder', MCAT.POWDER, C(170, 175, 180)),
@@ -113,8 +134,20 @@ export const MATERIALS = {
     MCAT.GAS,
     C(120, 0, 160),
   ),
+  [MID.STEAM]: material(MID.STEAM, 'Steam', MCAT.GAS, C(210, 230, 255, 180), {
+    implemented: true,
+    density: 0.35,
+    state: 'gas',
+    props: {
+      immovable: false,
+      viscosity: 0,
+      lateralRunMax: 4,
+      buoyancy: 7,
+      lifetime: 160,
+    },
+  }),
   // Liquids
-  [MID.WATER]: material(MID.WATER, 'Water', MCAT.LIQUID, C(64, 128, 255), {
+  [MID.WATER]: material(MID.WATER, 'Water', MCAT.LIQUID, C(64, 128, 255, 228), {
     implemented: true,
     density: 1000,
     state: 'liquid',
@@ -123,6 +156,12 @@ export const MATERIALS = {
       viscosity: 1,
       lateralRunMax: 6,
       buoyancy: 1,
+      pressureRange: 5,
+      freezeChance: 0.18,
+      dryIceFreezeChance: 0.65,
+      fireEvaporateChance: 0.75,
+      warmEvaporateChance: 0.18,
+      acidDilutionChance: 0.35,
     },
   }),
   [MID.OIL]: material(MID.OIL, 'Oil', MCAT.LIQUID, C(210, 170, 90), {
@@ -145,8 +184,26 @@ export const MATERIALS = {
   [MID.UMBRA]: material(MID.UMBRA, 'Umbra', MCAT.LIQUID, C(15, 15, 20)),
   // Solids
   [MID.IRON]: material(MID.IRON, 'Iron', MCAT.SOLID, C(110, 115, 120)),
-  [MID.WOOD]: material(MID.WOOD, 'Wood', MCAT.SOLID, C(145, 110, 65)),
+  [MID.WOOD]: material(MID.WOOD, 'Wood', MCAT.SOLID, C(145, 110, 65), {
+    density: 650,
+    props: {
+      immovable: false,
+      buoyancy: 3,
+    },
+  }),
   [MID.DRY_ICE]: material(MID.DRY_ICE, 'Dry Ice', MCAT.SOLID, C(210, 230, 255)),
+  [MID.ICE]: material(MID.ICE, 'Ice', MCAT.SOLID, C(180, 220, 255, 235), {
+    implemented: true,
+    density: 917,
+    state: 'solid',
+    props: {
+      immovable: false,
+      viscosity: 0,
+      lateralRunMax: 0,
+      buoyancy: -1,
+      slipperiness: 1,
+    },
+  }),
   [MID.NEUTRONIUM_CORE]: material(
     MID.NEUTRONIUM_CORE,
     'Neutronium Core',

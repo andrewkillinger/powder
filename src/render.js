@@ -1,4 +1,4 @@
-import { SAND, WET_SAND } from './elements.js';
+import { SAND, WET_SAND, WATER, STEAM } from './elements.js';
 
 const clampColor = (value) => {
   if (!Number.isFinite(value)) {
@@ -56,6 +56,15 @@ export function createRenderer(canvas, world, palette) {
     const cells = target.cells;
     const buffer = imageData.data;
     const paletteLength = colorTable.length;
+    const width = Number(target.width) || 0;
+    const totalCells = cells.length;
+    const now =
+      typeof performance === 'object' && typeof performance.now === 'function'
+        ? performance.now()
+        : typeof Date === 'function' && typeof Date.now === 'function'
+        ? Date.now()
+        : 0;
+    const shimmerWave = Math.sin(now / 600);
 
     for (let i = 0; i < cells.length; i += 1) {
       const id = cells[i] >>> 0;
@@ -68,7 +77,7 @@ export function createRenderer(canvas, world, palette) {
       let r = colorTable[offset] ?? 0;
       let g = colorTable[offset + 1] ?? 0;
       let b = colorTable[offset + 2] ?? 0;
-      const a = colorTable[offset + 3] ?? 255;
+      let a = colorTable[offset + 3] ?? 255;
 
       if (id === SAND || id === WET_SAND) {
         const hash = Math.imul((i + 1) ^ 0x2c9277b5, 0x85ebca6b) >>> 0;
@@ -82,6 +91,31 @@ export function createRenderer(canvas, world, palette) {
           r = clampColor(r + 2);
           g = clampColor(g + 1);
         }
+      } else if (id === WATER) {
+        const hash = Math.imul((i + 1) ^ 0x9e3779b9, 0x7f4a7c15) >>> 0;
+        let brightness = ((hash >> 16) & 0x07) - 3;
+        brightness += Math.round(shimmerWave * 3);
+        if (width > 0) {
+          const aboveIndex = i - width;
+          if (aboveIndex < 0 || cells[aboveIndex] !== WATER) {
+            brightness += 6;
+          }
+          const belowIndex = i + width;
+          if (belowIndex >= totalCells || cells[belowIndex] !== WATER) {
+            brightness -= 2;
+          }
+        }
+        r = clampColor(r + brightness);
+        g = clampColor(g + brightness);
+        b = clampColor(b + Math.round(brightness * 1.25));
+      } else if (id === STEAM) {
+        const hash = Math.imul((i + 3) ^ 0x85157af5, 0x4d2c5a67) >>> 0;
+        const drift = ((hash >> 18) & 0x07) - 3;
+        const wave = Math.round(shimmerWave * 4);
+        r = clampColor(r + drift + wave);
+        g = clampColor(g + drift + wave);
+        b = clampColor(b + drift + wave + 6);
+        a = clampColor(Math.max(80, a - 12 + wave));
       }
 
       buffer[pixel] = r;
