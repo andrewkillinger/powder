@@ -3,6 +3,7 @@ import { CATEGORY_ORDER } from './elements.js';
 const STYLE_ID = 'powder-ui-style';
 const TOOLBAR_ID = 'powder-toolbar';
 const MENU_ID = 'powder-element-menu';
+const SLOT_MENU_ID = 'powder-slot-menu';
 
 function injectStyles() {
   if (document.getElementById(STYLE_ID)) {
@@ -112,6 +113,106 @@ function injectStyles() {
     #${TOOLBAR_ID} .zoom-controls button {
       min-width: 56px;
       font-weight: 600;
+    }
+
+    #${TOOLBAR_ID} #${SLOT_MENU_ID} {
+      flex: 1 0 100%;
+      display: none;
+      flex-direction: column;
+      gap: 0.75rem;
+      background: rgba(18, 26, 44, 0.92);
+      border-radius: 16px;
+      padding: 0.75rem;
+      border: 1px solid rgba(56, 70, 110, 0.7);
+    }
+
+    #${TOOLBAR_ID} #${SLOT_MENU_ID}[data-open='true'] {
+      display: flex;
+    }
+
+    #${TOOLBAR_ID} #${SLOT_MENU_ID} .slot-menu-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+    }
+
+    #${TOOLBAR_ID} #${SLOT_MENU_ID} .slot-menu-title {
+      margin: 0;
+      font-size: 1rem;
+      font-weight: 600;
+    }
+
+    #${TOOLBAR_ID} #${SLOT_MENU_ID} .slot-menu-close {
+      border: none;
+      border-radius: 999px;
+      padding: 0.35rem 0.75rem;
+      background: rgba(34, 43, 67, 0.85);
+      color: inherit;
+      cursor: pointer;
+      min-height: 36px;
+      touch-action: manipulation;
+    }
+
+    #${TOOLBAR_ID} #${SLOT_MENU_ID} .slot-menu-close:hover {
+      background: rgba(88, 108, 255, 0.32);
+    }
+
+    #${TOOLBAR_ID} #${SLOT_MENU_ID} .slot-menu-subtitle {
+      margin: 0;
+      font-size: 0.8rem;
+      opacity: 0.75;
+    }
+
+    #${TOOLBAR_ID} #${SLOT_MENU_ID} .slot-menu-empty {
+      margin: 0;
+      font-size: 0.85rem;
+      opacity: 0.7;
+    }
+
+    #${TOOLBAR_ID} #${SLOT_MENU_ID} .slot-menu-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    #${TOOLBAR_ID} #${SLOT_MENU_ID} .slot-menu-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-radius: 12px;
+      border: 1px solid rgba(60, 72, 112, 0.6);
+      padding: 0.65rem 0.75rem;
+      background: rgba(30, 38, 62, 0.82);
+      color: inherit;
+      cursor: pointer;
+      transition: background 0.2s ease, border 0.2s ease, transform 0.2s ease;
+      text-align: left;
+      touch-action: manipulation;
+    }
+
+    #${TOOLBAR_ID} #${SLOT_MENU_ID} .slot-menu-item:hover:not(:disabled) {
+      background: rgba(88, 108, 255, 0.22);
+      border-color: rgba(150, 168, 255, 0.55);
+    }
+
+    #${TOOLBAR_ID} #${SLOT_MENU_ID} .slot-menu-item:active:not(:disabled) {
+      transform: scale(0.98);
+    }
+
+    #${TOOLBAR_ID} #${SLOT_MENU_ID} .slot-menu-item:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    #${TOOLBAR_ID} #${SLOT_MENU_ID} .slot-menu-item-label {
+      font-weight: 600;
+    }
+
+    #${TOOLBAR_ID} #${SLOT_MENU_ID} .slot-menu-item-meta {
+      font-size: 0.75rem;
+      opacity: 0.75;
+      margin-left: 1rem;
     }
 
     #${MENU_ID} {
@@ -621,12 +722,50 @@ export function initUI({
   onZoomChange,
   onElementOpen,
   onEraserToggle,
+  getSlots,
+  onSaveSlot,
+  onLoadSlot,
+  formatSlotTimestamp,
+  formatSlotSize,
 }) {
   if (!Game) {
     throw new Error('initUI requires a Game reference.');
   }
 
   injectStyles();
+
+  const readSlots = typeof getSlots === 'function' ? getSlots : () => [];
+  const saveSlotHandler = typeof onSaveSlot === 'function' ? onSaveSlot : null;
+  const loadSlotHandler = typeof onLoadSlot === 'function' ? onLoadSlot : null;
+  const formatTimestampFn =
+    typeof formatSlotTimestamp === 'function'
+      ? formatSlotTimestamp
+      : (value) => {
+          if (!value) {
+            return 'Empty';
+          }
+          const date = new Date(value);
+          if (Number.isNaN(date.getTime())) {
+            return 'Unknown';
+          }
+          return date.toLocaleString();
+        };
+  const formatSizeFn =
+    typeof formatSlotSize === 'function'
+      ? formatSlotSize
+      : (bytes) => {
+          if (!Number.isFinite(bytes) || bytes <= 0) {
+            return '';
+          }
+          if (bytes < 1024) {
+            return `${bytes} B`;
+          }
+          if (bytes < 1024 * 1024) {
+            return `${Math.round((bytes / 1024) * 10) / 10} KB`;
+          }
+          const mb = bytes / (1024 * 1024);
+          return `${Math.round(mb * 100) / 100} MB`;
+        };
 
   const toolbar = document.createElement('div');
   toolbar.id = TOOLBAR_ID;
@@ -662,6 +801,22 @@ export function initUI({
   const clearButton = document.createElement('button');
   clearButton.type = 'button';
   clearButton.textContent = 'Clear';
+
+  const saveButton = document.createElement('button');
+  saveButton.type = 'button';
+  saveButton.textContent = 'Save';
+  saveButton.setAttribute('aria-haspopup', 'listbox');
+  saveButton.setAttribute('aria-expanded', 'false');
+  saveButton.setAttribute('aria-controls', SLOT_MENU_ID);
+  saveButton.title = 'Save the current scene';
+
+  const loadButton = document.createElement('button');
+  loadButton.type = 'button';
+  loadButton.textContent = 'Load';
+  loadButton.setAttribute('aria-haspopup', 'listbox');
+  loadButton.setAttribute('aria-expanded', 'false');
+  loadButton.setAttribute('aria-controls', SLOT_MENU_ID);
+  loadButton.title = 'Load a saved scene';
 
   const brushLabel = document.createElement('label');
   brushLabel.textContent = 'Brush';
@@ -705,7 +860,300 @@ export function initUI({
   eraserButton.type = 'button';
   eraserButton.textContent = 'Eraser';
 
-  toolbar.append(elementButton, pauseButton, clearButton, brushLabel, zoomControls, eraserButton);
+  const slotMenu = document.createElement('div');
+  slotMenu.id = SLOT_MENU_ID;
+  slotMenu.className = 'slot-menu';
+  slotMenu.dataset.open = 'false';
+  slotMenu.dataset.mode = '';
+  slotMenu.setAttribute('aria-hidden', 'true');
+  slotMenu.setAttribute('role', 'region');
+  slotMenu.tabIndex = -1;
+
+  const slotHeader = document.createElement('div');
+  slotHeader.className = 'slot-menu-header';
+
+  const slotTitle = document.createElement('h3');
+  slotTitle.className = 'slot-menu-title';
+  slotTitle.textContent = 'Save slots';
+  slotTitle.id = `${SLOT_MENU_ID}-title`;
+
+  const slotClose = document.createElement('button');
+  slotClose.type = 'button';
+  slotClose.className = 'slot-menu-close';
+  slotClose.textContent = 'Close';
+  slotClose.setAttribute('aria-label', 'Close save and load menu');
+
+  slotHeader.append(slotTitle, slotClose);
+
+  const slotSubtitle = document.createElement('p');
+  slotSubtitle.className = 'slot-menu-subtitle';
+  slotSubtitle.textContent = 'Choose a slot to save the current scene.';
+
+  const slotStatus = document.createElement('p');
+  slotStatus.className = 'slot-menu-empty';
+  slotStatus.hidden = true;
+
+  const slotList = document.createElement('div');
+  slotList.className = 'slot-menu-list';
+  slotList.setAttribute('role', 'listbox');
+
+  slotMenu.setAttribute('aria-labelledby', slotTitle.id);
+  slotList.setAttribute('aria-labelledby', slotTitle.id);
+
+  slotMenu.append(slotHeader, slotSubtitle, slotStatus, slotList);
+
+  let slotMode = null;
+
+  function syncSlotButtonStates() {
+    const isOpen = slotMenu.dataset.open === 'true';
+    const activeMode = isOpen ? slotMode : null;
+    const saveActive = activeMode === 'save';
+    const loadActive = activeMode === 'load';
+    saveButton.classList.toggle('active', saveActive);
+    loadButton.classList.toggle('active', loadActive);
+    saveButton.setAttribute('aria-expanded', saveActive ? 'true' : 'false');
+    loadButton.setAttribute('aria-expanded', loadActive ? 'true' : 'false');
+  }
+
+  function renderSlots() {
+    let slots = [];
+    try {
+      const result = readSlots();
+      if (Array.isArray(result)) {
+        slots = result;
+      } else if (result && typeof result[Symbol.iterator] === 'function') {
+        slots = Array.from(result);
+      }
+    } catch (error) {
+      console.warn('Failed to read save slots:', error);
+      slots = [];
+    }
+
+    const storageAvailable = slots.some((slot) => slot?.storageAvailable !== false);
+    const hasLoadable = slots.some(
+      (slot) => slot?.storageAvailable !== false && slot?.hasData && !slot?.corrupt,
+    );
+
+    saveButton.disabled = !storageAvailable;
+    loadButton.disabled = !storageAvailable || !hasLoadable;
+
+    if (slotMenu.dataset.open !== 'true') {
+      return;
+    }
+
+    slotList.textContent = '';
+
+    if (!storageAvailable) {
+      slotStatus.hidden = false;
+      slotStatus.textContent = 'Storage is unavailable in this browser.';
+      return;
+    }
+
+    slotStatus.hidden = true;
+
+    let added = 0;
+    slots.forEach((slot) => {
+      if (!slot || typeof slot !== 'object') {
+        return;
+      }
+      const canSave = slot.storageAvailable !== false;
+      const canLoad = canSave && slot.hasData && !slot.corrupt;
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'slot-menu-item';
+      item.dataset.slotId = String(slot.id ?? '');
+      item.setAttribute('role', 'option');
+      const label = document.createElement('span');
+      label.className = 'slot-menu-item-label';
+      label.textContent = slot.name ?? `Slot ${added + 1}`;
+      const meta = document.createElement('span');
+      meta.className = 'slot-menu-item-meta';
+      let metaText = '';
+      if (slot.storageAvailable === false) {
+        metaText = 'Unavailable';
+      } else if (slot.corrupt) {
+        metaText = 'Corrupted';
+      } else if (!slot.hasData) {
+        metaText = 'Empty';
+      } else {
+        metaText = formatTimestampFn(slot.savedAt);
+      }
+      const sizeText = slot.hasData && !slot.corrupt ? formatSizeFn(slot.bytes) : '';
+      if (sizeText) {
+        metaText = metaText ? `${metaText} • ${sizeText}` : sizeText;
+      }
+      meta.textContent = metaText;
+      item.append(label, meta);
+
+      if ((slotMode === 'save' && !canSave) || (slotMode === 'load' && !canLoad)) {
+        item.disabled = true;
+      }
+
+      item.addEventListener('click', () => {
+        handleSlotAction(slot, { canSave, canLoad });
+      });
+
+      slotList.appendChild(item);
+      added += 1;
+    });
+
+    if (added === 0) {
+      slotStatus.hidden = false;
+      slotStatus.textContent = slotMode === 'save' ? 'No slots available.' : 'No saved scenes yet.';
+    } else {
+      slotStatus.hidden = true;
+    }
+  }
+
+  function openSlotMenu(mode) {
+    if (!mode) {
+      return;
+    }
+    if (slotMenu.dataset.open === 'true' && slotMode === mode) {
+      closeSlotMenu();
+      return;
+    }
+    slotMode = mode;
+    slotMenu.dataset.mode = mode;
+    slotMenu.dataset.open = 'true';
+    slotMenu.setAttribute('aria-hidden', 'false');
+    if (mode === 'save') {
+      slotTitle.textContent = 'Save scene';
+      slotSubtitle.textContent = 'Choose a slot to save the current scene. Existing data will be replaced.';
+    } else {
+      slotTitle.textContent = 'Load scene';
+      slotSubtitle.textContent = 'Choose a slot to load. Current scene will be replaced.';
+    }
+    syncSlotButtonStates();
+    renderSlots();
+    slotMenu.focus();
+  }
+
+  function closeSlotMenu({ focusButton = false } = {}) {
+    const previous = slotMode;
+    slotMenu.dataset.open = 'false';
+    slotMenu.dataset.mode = '';
+    slotMenu.setAttribute('aria-hidden', 'true');
+    slotMode = null;
+    syncSlotButtonStates();
+    if (focusButton) {
+      if (previous === 'save') {
+        saveButton.focus();
+      } else if (previous === 'load') {
+        loadButton.focus();
+      }
+    }
+  }
+
+  function handleSlotAction(slot, { canSave, canLoad }) {
+    if (slotMode === 'save') {
+      if (!canSave || !saveSlotHandler) {
+        return;
+      }
+      const shouldConfirm = slot.hasData && !slot.corrupt;
+      if (shouldConfirm) {
+        const confirmed = window.confirm(
+          `Overwrite ${slot.name ?? 'this slot'}? This cannot be undone.`,
+        );
+        if (!confirmed) {
+          return;
+        }
+      }
+      let outcome;
+      try {
+        outcome = saveSlotHandler(slot.id ?? slot.name ?? '');
+      } catch (error) {
+        console.error('Save slot handler error:', error);
+        return;
+      }
+      Promise.resolve(outcome)
+        .then((result) => {
+          if (!result || result.ok) {
+            closeSlotMenu();
+          }
+        })
+        .catch((error) => {
+          console.error('Save slot error:', error);
+        })
+        .finally(() => {
+          renderSlots();
+        });
+    } else if (slotMode === 'load') {
+      if (!canLoad || !loadSlotHandler) {
+        return;
+      }
+      const confirmed = window.confirm('Load this slot? The current scene will be replaced.');
+      if (!confirmed) {
+        return;
+      }
+      let outcome;
+      try {
+        outcome = loadSlotHandler(slot.id ?? slot.name ?? '');
+      } catch (error) {
+        console.error('Load slot handler error:', error);
+        return;
+      }
+      Promise.resolve(outcome)
+        .then((result) => {
+          if (result && result.ok) {
+            closeSlotMenu();
+          }
+        })
+        .catch((error) => {
+          console.error('Load slot error:', error);
+        })
+        .finally(() => {
+          renderSlots();
+        });
+    }
+  }
+
+  saveButton.addEventListener('click', () => {
+    openSlotMenu('save');
+  });
+
+  loadButton.addEventListener('click', () => {
+    openSlotMenu('load');
+  });
+
+  slotClose.addEventListener('click', () => {
+    closeSlotMenu({ focusButton: true });
+  });
+
+  slotMenu.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      closeSlotMenu({ focusButton: true });
+    }
+  });
+
+  const handleDocumentClick = (event) => {
+    if (slotMenu.dataset.open !== 'true') {
+      return;
+    }
+    const path = event.composedPath ? event.composedPath() : [];
+    if (path.includes(slotMenu) || path.includes(saveButton) || path.includes(loadButton)) {
+      return;
+    }
+    closeSlotMenu();
+  };
+
+  document.addEventListener('click', handleDocumentClick);
+
+  syncSlotButtonStates();
+
+  toolbar.append(
+    elementButton,
+    pauseButton,
+    clearButton,
+    saveButton,
+    loadButton,
+    brushLabel,
+    zoomControls,
+    eraserButton,
+    slotMenu,
+  );
   document.body.appendChild(toolbar);
 
   const availableElements = (elements || []).filter(Boolean);
@@ -800,16 +1248,19 @@ export function initUI({
   }
 
   update(Game.state);
+  renderSlots();
 
   function destroy() {
     toolbar.remove();
     elementPicker.destroy();
+    document.removeEventListener('click', handleDocumentClick);
   }
 
   return {
     toolbar,
     update,
     destroy,
+    refreshSlots: renderSlots,
     getHeight() {
       const rect = toolbar.getBoundingClientRect();
       return rect.height;
