@@ -2,9 +2,11 @@ import {
   EMPTY,
   WALL,
   SAND,
+  WET_SAND,
   WATER,
   OIL,
   FIRE,
+  GLASS,
   getMaterial,
 } from './elements.js';
 import { createInteractionRouter } from './interactions.js';
@@ -62,6 +64,25 @@ const CLEAR_COOLDOWN_NEXT_MASK = 0xff ^ FLAG_SWAP_COOLDOWN_NEXT;
 
 const DEFAULT_STEP_SECONDS = 1 / 30;
 const WATER_SAND_DISPLACEMENT_PROBABILITY = 0.2;
+const SAND_HEAT_ACCUMULATION = 45;
+const SAND_HEAT_COOL_RATE = 5;
+const SAND_GLASS_HEAT_THRESHOLD = 200;
+const WET_SAND_MAX_MOISTURE = 220;
+const WET_SAND_DRY_RATE = 2;
+const WET_SAND_EXTRA_DRY_RATE = 6;
+const WET_SAND_SLIDE_PROBABILITY = 0.35;
+const WET_SAND_DIAGONAL_PROBABILITY = 0.25;
+
+const SURROUNDING_OFFSETS = [
+  [0, -1],
+  [-1, 0],
+  [1, 0],
+  [0, 1],
+  [-1, -1],
+  [1, -1],
+  [-1, 1],
+  [1, 1],
+];
 
 const rngState = {
   seed: Math.floor(Math.random() * 0xffffffff) >>> 0,
@@ -327,6 +348,24 @@ function clearCellState(world, index) {
   }
 }
 
+function transformCell(world, index, id, lifetime = 0) {
+  if (!world || !world.cells) {
+    return;
+  }
+  if (index < 0 || index >= world.cells.length) {
+    return;
+  }
+  world.cells[index] = id;
+  clearCellState(world, index);
+  if (Number.isFinite(lifetime)) {
+    setLifetime(world, index, lifetime);
+  }
+}
+
+function isSandLike(id) {
+  return id === SAND || id === WET_SAND;
+}
+
 export const UPDATERS = [];
 
 UPDATERS[EMPTY] = function noop() {};
@@ -495,13 +534,62 @@ function updateSand(world, x, y) {
   const width = world.width;
   const height = world.height;
   const index = y * width + x;
-  const belowY = y + 1;
+  const cells = world.cells;
+  const lifetimes = world.lifetimes;
+  const rng = currentStep.rng;
+
+  for (let i = 0; i < SURROUNDING_OFFSETS.length; i += 1) {
+    const [dx, dy] = SURROUNDING_OFFSETS[i];
+    const nx = x + dx;
+    const ny = y + dy;
+    if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
+      continue;
+    }
+    const neighborIndex = ny * width + nx;
+    if (cells[neighborIndex] === WATER) {
+      transformCell(world, neighborIndex, WET_SAND, WET_SAND_MAX_MOISTURE);
+      transformCell(world, index, WET_SAND, WET_SAND_MAX_MOISTURE);
+      return;
+    }
+  }
+
+  let heat = lifetimes ? lifetimes[index] : 0;
+  let touchingExtremeHeat = false;
+
+  for (let i = 0; i < SURROUNDING_OFFSETS.length; i += 1) {
+    const [dx, dy] = SURROUNDING_OFFSETS[i];
+    const nx = x + dx;
+    const ny = y + dy;
+    if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
+      continue;
+    }
+    if (cells[ny * width + nx] === FIRE) {
+      touchingExtremeHeat = true;
+      break;
+    }
+  }
+
+  if (touchingExtremeHeat) {
+    heat = Math.min(255, heat + SAND_HEAT_ACCUMULATION);
+  } else if (heat > 0) {
+    heat = Math.max(0, heat - SAND_HEAT_COOL_RATE);
+  }
+
+  if (lifetimes) {
+    lifetimes[index] = heat;
+  }
+
+  if (touchingExtremeHeat && heat >= SAND_GLASS_HEAT_THRESHOLD) {
+    transformCell(world, index, GLASS);
+    return;
+  }
 
   const sandDensity = densityOf(SAND);
+  const belowY = y + 1;
 
   if (belowY < height) {
     const belowIndex = index + width;
-    const belowId = world.cells[belowIndex];
+    const belowId = cells[belowIndex];
 
     if (isEmpty(belowId)) {
       if (trySwapInternal(world, index, belowIndex, { afterSwapDir: 0 })) {
@@ -519,7 +607,6 @@ function updateSand(world, x, y) {
 
   const parity = currentStep.frameParity;
   const order = parity === 0 ? [-1, 1] : [1, -1];
-  const rng = currentStep.rng;
   if (rng && rng() < 0.5) {
     order.reverse();
   }
@@ -533,7 +620,7 @@ function updateSand(world, x, y) {
     }
 
     const targetIndex = ny * width + nx;
-    const targetId = world.cells[targetIndex];
+    const targetId = cells[targetIndex];
 
     if (isEmpty(targetId)) {
       if (trySwapInternal(world, index, targetIndex, { afterSwapDir: dir })) {
@@ -547,6 +634,152 @@ function updateSand(world, x, y) {
   }
 
   if (world.lastMoveDir) {
+    world.lastMoveDir[index] = 0;
+  }
+}
+
+function updateWetSand(world, x, y) {
+  const width = world.width;
+  const height = world.height;
+  const index = y * width + x;
+  const cells = world.cells;
+  const lifetimes = world.lifetimes;
+  const rng = currentStep.rng;
+  const previousDir = world.lastMoveDir ? world.lastMoveDir[index] : 0;
+
+  let moisture = lifetimes ? lifetimes[index] : WET_SAND_MAX_MOISTURE;
+  let nearWater = false;
+  let nearFire = false;
+
+  for (let i = 0; i < SURROUNDING_OFFSETS.length; i += 1) {
+    const [dx, dy] = SURROUNDING_OFFSETS[i];
+    const nx = x + dx;
+    const ny = y + dy;
+    if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
+      continue;
+    }
+    const neighborIndex = ny * width + nx;
+    const neighborId = cells[neighborIndex];
+
+    if (neighborId === WATER) {
+      nearWater = true;
+      transformCell(world, neighborIndex, WET_SAND, WET_SAND_MAX_MOISTURE);
+    } else if (neighborId === FIRE) {
+      nearFire = true;
+    }
+  }
+
+  if (nearWater) {
+    moisture = WET_SAND_MAX_MOISTURE;
+  } else if (moisture > 0) {
+    const dryRate = nearFire ? WET_SAND_EXTRA_DRY_RATE : WET_SAND_DRY_RATE;
+    moisture = moisture > dryRate ? moisture - dryRate : 0;
+  }
+
+  if (lifetimes) {
+    lifetimes[index] = Math.max(0, Math.min(255, moisture));
+  }
+
+  if (!nearWater && moisture <= 0) {
+    transformCell(world, index, SAND);
+    return;
+  }
+
+  const wetSandDensity = densityOf(WET_SAND);
+  const belowY = y + 1;
+
+  if (belowY < height) {
+    const belowIndex = index + width;
+    const belowId = cells[belowIndex];
+
+    if (isEmpty(belowId)) {
+      if (trySwapInternal(world, index, belowIndex, { afterSwapDir: 0 })) {
+        return;
+      }
+    } else if (!isImmovable(belowId) && densityOf(belowId) < wetSandDensity) {
+      if (trySwapInternal(world, index, belowIndex, { afterSwapDir: 0, cooldown: true })) {
+        return;
+      }
+    }
+  } else {
+    if (world.lastMoveDir) {
+      world.lastMoveDir[index] = 0;
+    }
+    return;
+  }
+
+  const parity = currentStep.frameParity;
+  const diagonalOrder = parity === 0 ? [-1, 1] : [1, -1];
+  if (rng && rng() < 0.35) {
+    diagonalOrder.reverse();
+  }
+
+  for (let i = 0; i < diagonalOrder.length; i += 1) {
+    if (rng && rng() > WET_SAND_DIAGONAL_PROBABILITY) {
+      continue;
+    }
+    const dir = diagonalOrder[i];
+    const nx = x + dir;
+    const ny = y + 1;
+    if (nx < 0 || nx >= width || ny >= height) {
+      continue;
+    }
+    const targetIndex = ny * width + nx;
+    const targetId = cells[targetIndex];
+
+    if (isEmpty(targetId)) {
+      if (trySwapInternal(world, index, targetIndex, { afterSwapDir: dir, cooldown: true })) {
+        return;
+      }
+    } else if (!isImmovable(targetId) && densityOf(targetId) < wetSandDensity) {
+      if (trySwapInternal(world, index, targetIndex, { afterSwapDir: dir, cooldown: true })) {
+        return;
+      }
+    }
+  }
+
+  let movedLaterally = false;
+  const slideRoll = rng ? rng() : Math.random();
+  if (slideRoll < WET_SAND_SLIDE_PROBABILITY) {
+    const lateralOrder = chooseLateralOrder(previousDir, parity, rng);
+    for (let i = 0; i < lateralOrder.length; i += 1) {
+      const dir = lateralOrder[i];
+      if (dir === 0) {
+        continue;
+      }
+      const nx = x + dir;
+      if (nx < 0 || nx >= width) {
+        continue;
+      }
+      const candidateIndex = y * width + nx;
+      if (!isEmpty(cells[candidateIndex])) {
+        continue;
+      }
+
+      const supportY = y + 1;
+      if (supportY >= height) {
+        if (trySwapInternal(world, index, candidateIndex, { afterSwapDir: dir, cooldown: true })) {
+          movedLaterally = true;
+        }
+        break;
+      }
+
+      const supportIndex = candidateIndex + width;
+      const supportId = cells[supportIndex];
+      if (isEmpty(supportId)) {
+        continue;
+      }
+      if (isImmovable(supportId) || densityOf(supportId) >= wetSandDensity) {
+        continue;
+      }
+      if (trySwapInternal(world, index, candidateIndex, { afterSwapDir: dir, cooldown: true })) {
+        movedLaterally = true;
+        break;
+      }
+    }
+  }
+
+  if (world.lastMoveDir && !movedLaterally) {
     world.lastMoveDir[index] = 0;
   }
 }
@@ -573,6 +806,64 @@ function chooseLateralOrder(previousDir, parity, rng) {
   return order.filter((value, index) => order.indexOf(value) === index);
 }
 
+function updateGlass(world, x, y) {
+  const width = world.width;
+  const height = world.height;
+  const index = y * width + x;
+  const cells = world.cells;
+  const glassDensity = densityOf(GLASS);
+  const rng = currentStep.rng;
+
+  const belowY = y + 1;
+  if (belowY < height) {
+    const belowIndex = index + width;
+    const belowId = cells[belowIndex];
+
+    if (isEmpty(belowId)) {
+      if (trySwapInternal(world, index, belowIndex, { afterSwapDir: 0 })) {
+        return;
+      }
+    } else if (!isImmovable(belowId) && densityOf(belowId) < glassDensity) {
+      if (trySwapInternal(world, index, belowIndex, { afterSwapDir: 0, cooldown: true })) {
+        return;
+      }
+    }
+  } else {
+    if (world.lastMoveDir) {
+      world.lastMoveDir[index] = 0;
+    }
+    return;
+  }
+
+  const parity = currentStep.frameParity;
+  const diagonalOrder = parity === 0 ? [-1, 1] : [1, -1];
+  if (rng && rng() < 0.25) {
+    diagonalOrder.reverse();
+  }
+
+  for (let i = 0; i < diagonalOrder.length; i += 1) {
+    const dir = diagonalOrder[i];
+    const nx = x + dir;
+    const ny = y + 1;
+    if (nx < 0 || nx >= width || ny >= height) {
+      continue;
+    }
+
+    const targetIndex = ny * width + nx;
+    const targetId = cells[targetIndex];
+
+    if (isEmpty(targetId)) {
+      if (trySwapInternal(world, index, targetIndex, { afterSwapDir: dir, cooldown: true })) {
+        return;
+      }
+    }
+  }
+
+  if (world.lastMoveDir) {
+    world.lastMoveDir[index] = 0;
+  }
+}
+
 function canFallThrough(id, waterDensity) {
   if (isEmpty(id)) {
     return true;
@@ -587,6 +878,8 @@ function updateWater(world, x, y) {
   const width = world.width;
   const height = world.height;
   const index = y * width + x;
+  const cells = world.cells;
+  const lifetimes = world.lifetimes;
   const waterDensity = densityOf(WATER);
   const metadata = getMeta(WATER) || {};
   const lateralRunMax = Math.max(1, Math.trunc(metadata.lateralRunMax ?? 1));
@@ -595,10 +888,35 @@ function updateWater(world, x, y) {
   const parity = currentStep.frameParity;
   const previousDir = world.lastMoveDir ? world.lastMoveDir[index] : 0;
 
+  for (let i = 0; i < SURROUNDING_OFFSETS.length; i += 1) {
+    const [dx, dy] = SURROUNDING_OFFSETS[i];
+    const nx = x + dx;
+    const ny = y + dy;
+    if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
+      continue;
+    }
+    const neighborIndex = ny * width + nx;
+    const neighborId = cells[neighborIndex];
+
+    if (neighborId === SAND) {
+      transformCell(world, neighborIndex, WET_SAND, WET_SAND_MAX_MOISTURE);
+      transformCell(world, index, WET_SAND, WET_SAND_MAX_MOISTURE);
+      return;
+    }
+    if (neighborId === WET_SAND) {
+      if (lifetimes) {
+        const refreshed = Math.min(255, WET_SAND_MAX_MOISTURE);
+        lifetimes[neighborIndex] = Math.max(lifetimes[neighborIndex], refreshed);
+      }
+      transformCell(world, index, WET_SAND, WET_SAND_MAX_MOISTURE);
+      return;
+    }
+  }
+
   const belowY = y + 1;
   if (belowY < height) {
     const belowIndex = index + width;
-    const belowId = world.cells[belowIndex];
+    const belowId = cells[belowIndex];
 
     if (isEmpty(belowId) || (isLiquid(belowId) && densityOf(belowId) < waterDensity)) {
       if (trySwapInternal(world, index, belowIndex, { afterSwapDir: 0 })) {
@@ -619,6 +937,11 @@ function updateWater(world, x, y) {
           }
           return;
         }
+      }
+    } else if (belowId === WET_SAND) {
+      if (lifetimes) {
+        const refreshed = Math.min(255, WET_SAND_MAX_MOISTURE);
+        lifetimes[belowIndex] = Math.max(lifetimes[belowIndex], refreshed);
       }
     }
   } else {
@@ -642,7 +965,7 @@ function updateWater(world, x, y) {
     }
 
     const targetIndex = ny * width + nx;
-    const targetId = world.cells[targetIndex];
+    const targetId = cells[targetIndex];
 
     if (isEmpty(targetId) || (isLiquid(targetId) && densityOf(targetId) < waterDensity)) {
       if (trySwapInternal(world, index, targetIndex, { afterSwapDir: dir })) {
@@ -663,6 +986,11 @@ function updateWater(world, x, y) {
           }
           return;
         }
+      }
+    } else if (targetId === WET_SAND) {
+      if (lifetimes) {
+        const refreshed = Math.min(255, WET_SAND_MAX_MOISTURE);
+        lifetimes[targetIndex] = Math.max(lifetimes[targetIndex], refreshed);
       }
     }
   }
@@ -937,6 +1265,27 @@ function updateFire(world, x, y) {
     }
   }
 
+  let surroundedBySand = true;
+  for (let i = 0; i < SURROUNDING_OFFSETS.length; i += 1) {
+    const [dx, dy] = SURROUNDING_OFFSETS[i];
+    const nx = x + dx;
+    const ny = y + dy;
+    if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
+      surroundedBySand = false;
+      break;
+    }
+    const neighborIndex = ny * width + nx;
+    if (!isSandLike(cells[neighborIndex])) {
+      surroundedBySand = false;
+      break;
+    }
+  }
+
+  if (surroundedBySand) {
+    extinguishFire(world, index);
+    return;
+  }
+
   const cap = currentStep.fireSpawnCap;
   const capActive = Number.isFinite(cap) && cap >= 0;
 
@@ -1014,9 +1363,11 @@ function updateFire(world, x, y) {
 }
 
 UPDATERS[SAND] = updateSand;
+UPDATERS[WET_SAND] = updateWetSand;
 UPDATERS[WATER] = updateWater;
 UPDATERS[OIL] = updateOil;
 UPDATERS[FIRE] = updateFire;
+UPDATERS[GLASS] = updateGlass;
 
 export function createWorld(width, height) {
   const normalizedWidth = normalizeDimension(width, DEFAULT_WORLD_WIDTH);
