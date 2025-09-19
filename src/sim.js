@@ -1,7 +1,57 @@
-import { ELEMENTS, EMPTY, WALL, SAND, WATER, OIL, FIRE } from './elements.js';
+import {
+  EMPTY,
+  WALL,
+  SAND,
+  WATER,
+  OIL,
+  FIRE,
+  getMaterial,
+} from './elements.js';
+import { createInteractionRouter } from './interactions.js';
 
 const DEFAULT_WORLD_WIDTH = 256;
 const DEFAULT_WORLD_HEIGHT = 256;
+
+const EMPTY_META = Object.freeze({
+  id: EMPTY,
+  name: 'Empty',
+  state: 'void',
+  density: 0,
+  immovable: true,
+  viscosity: 0,
+  lateralRunMax: 0,
+  buoyancy: 0,
+});
+
+const WALL_META = Object.freeze({
+  id: WALL,
+  name: 'Wall',
+  state: 'solid',
+  density: 10000,
+  immovable: true,
+  viscosity: 0,
+  lateralRunMax: 0,
+  buoyancy: 0,
+});
+
+const FIRE_META = Object.freeze({
+  id: FIRE,
+  name: 'Fire',
+  state: 'gas',
+  density: 1,
+  immovable: false,
+  viscosity: 0,
+  lateralRunMax: 0,
+  buoyancy: 6,
+  flammable: true,
+  fire: {
+    lifetimeMin: 20,
+    lifetimeMax: 60,
+    igniteProbability: 0.2,
+    extinguishProbability: 0.5,
+    maxSpawnPerTick: 18,
+  },
+});
 
 const FLAG_MOVED_THIS_TICK = 1 << 0;
 const FLAG_SWAP_COOLDOWN = 1 << 1;
@@ -27,6 +77,7 @@ const currentStep = {
   fireSpawnCap: 0,
   fireSpawnedThisTick: 0,
   particleBudget: null,
+  router: null,
 };
 
 function clamp01(value) {
@@ -43,9 +94,8 @@ function clamp01(value) {
 }
 
 function getFireSettings() {
-  const meta = ELEMENTS[FIRE];
-  if (meta && typeof meta.fire === 'object' && meta.fire !== null) {
-    return meta.fire;
+  if (typeof FIRE_META.fire === 'object' && FIRE_META.fire !== null) {
+    return FIRE_META.fire;
   }
   return {};
 }
@@ -131,7 +181,15 @@ function igniteCellAt(world, index, productId = FIRE) {
   }
 
   const existing = world.cells[index];
-  if (!ELEMENTS[productId]) {
+  const productMeta =
+    productId === EMPTY
+      ? EMPTY_META
+      : productId === WALL
+      ? WALL_META
+      : productId === FIRE
+      ? FIRE_META
+      : getMaterial(productId);
+  if (!productMeta) {
     return false;
   }
 
@@ -218,8 +276,25 @@ export function setSimulationSeed(seed) {
   return normalized;
 }
 
+export function initSim(world, rng) {
+  if (typeof rng === 'function') {
+    rngState.rng = rng;
+  }
+  const router = createInteractionRouter({ getMat: getMaterial, rng: rngState.rng });
+  return { router };
+}
+
 function getMeta(id) {
-  return ELEMENTS[id] || ELEMENTS[EMPTY];
+  if (id === EMPTY) {
+    return EMPTY_META;
+  }
+  if (id === WALL) {
+    return WALL_META;
+  }
+  if (id === FIRE) {
+    return FIRE_META;
+  }
+  return getMaterial(id) || EMPTY_META;
 }
 
 function densityOf(id) {
@@ -279,6 +354,7 @@ export function getParticleCount(world) {
 function trySwapInternal(world, sourceIndex, targetIndex, options) {
   const cells = world.cells;
   const flags = world.flags;
+  const width = Number(world.width) || 0;
 
   const sourceId = cells[sourceIndex];
   const targetId = cells[targetIndex];
@@ -358,6 +434,18 @@ function trySwapInternal(world, sourceIndex, targetIndex, options) {
     ((sourceId === WATER && targetId === SAND) || (sourceId === SAND && targetId === WATER))
   ) {
     currentStep.stats.swaps = (currentStep.stats.swaps ?? 0) + 1;
+  }
+
+  if (currentStep.router && width > 0) {
+    const ax = sourceIndex % width;
+    const ay = Math.floor(sourceIndex / width);
+    const bx = targetIndex % width;
+    const by = Math.floor(targetIndex / width);
+    const idA = cells[targetIndex];
+    const idB = cells[sourceIndex];
+    if (idA !== idB && idA !== EMPTY && idB !== EMPTY) {
+      currentStep.router.contact(world, ax, ay, bx, by, idA, idB);
+    }
   }
 
   return true;
@@ -500,7 +588,7 @@ function updateWater(world, x, y) {
   const height = world.height;
   const index = y * width + x;
   const waterDensity = densityOf(WATER);
-  const metadata = ELEMENTS[WATER] || {};
+  const metadata = getMeta(WATER) || {};
   const lateralRunMax = Math.max(1, Math.trunc(metadata.lateralRunMax ?? 1));
 
   const rng = currentStep.rng;
@@ -639,7 +727,7 @@ function updateOil(world, x, y) {
   const height = world.height;
   const index = y * width + x;
   const oilDensity = densityOf(OIL);
-  const metadata = ELEMENTS[OIL] || {};
+  const metadata = getMeta(OIL) || {};
   const lateralRunMax = Math.max(1, Math.trunc(metadata.lateralRunMax ?? 1));
   const viscosity = Math.max(1, Math.trunc(metadata.viscosity ?? 1));
   const rng = currentStep.rng;
@@ -651,7 +739,7 @@ function updateOil(world, x, y) {
     Number.isFinite(combustion.igniteProbability) ? combustion.igniteProbability : 0,
   );
   const igniteProduct = Number.isFinite(combustion.product) ? combustion.product : FIRE;
-  if (igniteChance > 0 && ELEMENTS[igniteProduct]) {
+  if (igniteChance > 0 && (igniteProduct === FIRE || getMaterial(igniteProduct))) {
     const igniteNeighbors = [
       { dx: -1, dy: 0 },
       { dx: 1, dy: 0 },
@@ -871,7 +959,7 @@ function updateFire(world, x, y) {
       if (neighborId === EMPTY || neighborId === FIRE) {
         continue;
       }
-      const meta = ELEMENTS[neighborId];
+      const meta = getMeta(neighborId);
       if (!meta || !meta.flammable) {
         continue;
       }
@@ -1040,12 +1128,18 @@ export function step(world, context = {}) {
 
   const state = context.state ?? context ?? {};
   const parity = (Number(state.frame) || 0) & 1;
+  const router = context.router ?? null;
 
   currentStep.frameParity = parity;
   currentStep.rng = ensureRng(state.seed);
   currentStep.stats = context.stats ?? null;
   currentStep.limits = context.limits ?? null;
   currentStep.metrics = context.metrics ?? null;
+  currentStep.router = router;
+
+  if (router && typeof router.resetFrame === 'function') {
+    router.resetFrame();
+  }
   const fireSettings = getFireSettings();
   const rawCap = Number.isFinite(fireSettings.maxSpawnPerTick)
     ? Math.trunc(fireSettings.maxSpawnPerTick)
@@ -1077,6 +1171,36 @@ export function step(world, context = {}) {
     }
   }
 
+  if (router && typeof router.adjacentTick === 'function') {
+    for (let y = 0; y < height; y += 1) {
+      const rowOffset = y * width;
+      for (let x = 0; x < width; x += 1) {
+        const index = rowOffset + x;
+        const id = cells[index];
+        if (x + 1 < width) {
+          const neighborIndex = index + 1;
+          const neighborId = cells[neighborIndex];
+          if (
+            (id !== EMPTY || neighborId !== EMPTY) &&
+            (id !== WALL || neighborId !== WALL)
+          ) {
+            router.adjacentTick(world, x, y, x + 1, y, id, neighborId);
+          }
+        }
+        if (y + 1 < height) {
+          const neighborIndex = index + width;
+          const neighborId = cells[neighborIndex];
+          if (
+            (id !== EMPTY || neighborId !== EMPTY) &&
+            (id !== WALL || neighborId !== WALL)
+          ) {
+            router.adjacentTick(world, x, y, x, y + 1, id, neighborId);
+          }
+        }
+      }
+    }
+  }
+
   currentStep.rng = null;
   currentStep.stats = null;
   currentStep.limits = null;
@@ -1084,6 +1208,7 @@ export function step(world, context = {}) {
   currentStep.fireSpawnCap = 0;
   currentStep.fireSpawnedThisTick = 0;
   currentStep.particleBudget = null;
+  currentStep.router = null;
 }
 
 export function paintCircle(world, x, y, radius, elementId) {
@@ -1241,6 +1366,8 @@ export function fillRect(world, elementId, x0, y0, x1, y1) {
 
   return writes;
 }
+
+export { mulberry32 };
 
 export function createSimulation(options = {}) {
   const width = normalizeDimension(options.width, DEFAULT_WORLD_WIDTH);

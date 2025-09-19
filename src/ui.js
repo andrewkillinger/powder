@@ -1,5 +1,3 @@
-import { CATEGORY_ORDER } from './elements.js';
-
 const STYLE_ID = 'powder-ui-style';
 const TOOLBAR_ID = 'powder-toolbar';
 const MENU_ID = 'powder-element-menu';
@@ -79,8 +77,12 @@ function injectStyles() {
     }
 
     #${TOOLBAR_ID} .element-pill-icon {
-      font-size: 1.2rem;
-      line-height: 1;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      border: 1px solid rgba(255, 255, 255, 0.4);
+      background: rgba(150, 160, 220, 0.65);
+      box-shadow: 0 0 0 2px rgba(17, 24, 43, 0.6);
     }
 
     #${TOOLBAR_ID} .element-pill-prefix {
@@ -367,11 +369,13 @@ function injectStyles() {
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      gap: 0.4rem;
+      gap: 0.5rem;
       font-weight: 600;
       transition: background 0.2s ease, border 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
       cursor: pointer;
       touch-action: manipulation;
+      position: relative;
+      overflow: hidden;
     }
 
     #${MENU_ID} .element-option:active {
@@ -384,9 +388,13 @@ function injectStyles() {
       box-shadow: inset 0 0 0 1px rgba(150, 168, 255, 0.6);
     }
 
-    #${MENU_ID} .element-option-icon {
-      font-size: 1.6rem;
-      line-height: 1;
+    #${MENU_ID} .element-option-swatch {
+      width: 36px;
+      height: 36px;
+      border-radius: 12px;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+      border: 1px solid rgba(12, 18, 30, 0.65);
+      background: rgba(180, 190, 220, 0.4);
     }
 
     #${MENU_ID} .element-option-label {
@@ -399,6 +407,51 @@ function injectStyles() {
       font-size: 0.95rem;
     }
 
+    #${MENU_ID} .element-option-badge {
+      position: absolute;
+      top: 6px;
+      right: 8px;
+      padding: 0.15rem 0.45rem;
+      border-radius: 999px;
+      background: rgba(255, 92, 92, 0.9);
+      color: #fff;
+      font-size: 0.65rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      pointer-events: none;
+    }
+
+    #${MENU_ID} .element-option[data-wip='true'] {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+
+    #${MENU_ID} .element-option::after {
+      content: '';
+      position: absolute;
+      left: 8px;
+      right: 8px;
+      bottom: 8px;
+      padding: 0.3rem 0.5rem;
+      border-radius: 8px;
+      background: rgba(18, 24, 40, 0.95);
+      color: #fff;
+      font-size: 0.7rem;
+      letter-spacing: 0.03em;
+      opacity: 0;
+      transform: translateY(8px);
+      transition: opacity 0.2s ease, transform 0.2s ease;
+      pointer-events: none;
+      text-align: center;
+    }
+
+    #${MENU_ID} .element-option[data-tooltip-visible='true']::after {
+      content: attr(data-tooltip);
+      opacity: 1;
+      transform: translateY(0);
+    }
+
     #${MENU_ID} [hidden] {
       display: none !important;
     }
@@ -407,7 +460,14 @@ function injectStyles() {
   document.head.appendChild(style);
 }
 
-function createElementModal({ elements = [], onSelect, onOpen, onClose }) {
+function createElementModal({
+  materials = [],
+  categories = [],
+  getCurrentId = () => null,
+  onSelect,
+  onOpen,
+  onClose,
+}) {
   const modal = document.createElement('div');
   modal.id = MENU_ID;
   modal.dataset.open = 'false';
@@ -423,7 +483,7 @@ function createElementModal({ elements = [], onSelect, onOpen, onClose }) {
   const title = document.createElement('h2');
   title.className = 'panel-title';
   title.id = `${MENU_ID}-title`;
-  title.textContent = 'Choose element';
+  title.textContent = 'Choose material';
   panel.setAttribute('aria-labelledby', title.id);
 
   const header = document.createElement('div');
@@ -434,7 +494,7 @@ function createElementModal({ elements = [], onSelect, onOpen, onClose }) {
   closeButton.type = 'button';
   closeButton.className = 'close-button';
   closeButton.textContent = 'Close';
-  closeButton.setAttribute('aria-label', 'Close element picker');
+  closeButton.setAttribute('aria-label', 'Close material picker');
   header.appendChild(closeButton);
 
   const categoryBar = document.createElement('div');
@@ -446,8 +506,8 @@ function createElementModal({ elements = [], onSelect, onOpen, onClose }) {
   const searchInput = document.createElement('input');
   searchInput.type = 'search';
   searchInput.className = 'search-input';
-  searchInput.placeholder = 'Search elements';
-  searchInput.setAttribute('aria-label', 'Search elements');
+  searchInput.placeholder = 'Search materials';
+  searchInput.setAttribute('aria-label', 'Search materials');
   searchInput.autocomplete = 'off';
   searchInput.autocapitalize = 'none';
   searchInput.spellcheck = false;
@@ -457,238 +517,262 @@ function createElementModal({ elements = [], onSelect, onOpen, onClose }) {
   grid.className = 'element-grid';
   grid.setAttribute('role', 'listbox');
 
-  panel.appendChild(header);
-  panel.appendChild(categoryBar);
-  panel.appendChild(searchRow);
-  panel.appendChild(grid);
+  panel.append(header, categoryBar, searchRow, grid);
   modal.appendChild(panel);
 
-  const safeElements = elements.filter(Boolean);
-  const elementButtons = new Map();
+  const tooltipTimers = new Map();
   const categoryButtons = new Map();
-  const categoriesPresent = new Set();
+  const buttonMap = new Map();
+  const categoryOrder = categories.map((cat) => cat.key);
 
-  safeElements.forEach((element) => {
-    if (element?.category) {
-      categoriesPresent.add(element.category);
+  const availableMaterials = materials.filter(Boolean).slice();
+  availableMaterials.sort((a, b) => {
+    const aKey = a.cat || a.category || '';
+    const bKey = b.cat || b.category || '';
+    const ai = categoryOrder.indexOf(aKey);
+    const bi = categoryOrder.indexOf(bKey);
+    if (ai !== bi) {
+      return (ai === -1 ? Number.MAX_SAFE_INTEGER : ai) -
+        (bi === -1 ? Number.MAX_SAFE_INTEGER : bi);
     }
+    return (a.id ?? 0) - (b.id ?? 0);
   });
 
-  const fallbackCategory =
-    CATEGORY_ORDER.find((category) => categoriesPresent.has(category)) ??
-    CATEGORY_ORDER[0] ??
-    null;
-
+  const fallbackCategory = categoryOrder[0] ?? null;
   let activeCategory = fallbackCategory;
-  let selectedElementId = null;
   let searchQuery = '';
+  let selectedId = getCurrentId();
   let lastFocused = null;
   let isOpen = false;
   let searchDebounce = null;
 
-  function updateSelection(elementId) {
-    selectedElementId = elementId;
-    elementButtons.forEach((button, id) => {
-      const selected = id === elementId;
-    button.classList.toggle('selected', selected);
-    button.setAttribute('aria-selected', selected ? 'true' : 'false');
-  });
-}
+  function colorToCss(color) {
+    if (!Array.isArray(color)) {
+      return 'rgba(255, 255, 255, 0.6)';
+    }
+    const [r = 255, g = 255, b = 255, a = 255] = color;
+    return `rgba(${r}, ${g}, ${b}, ${Math.max(0, Math.min(255, a)) / 255})`;
+  }
 
-  function render() {
-    const query = searchQuery.trim();
-    const normalized = query.toLowerCase();
-    const hasQuery = normalized.length > 0;
-    safeElements.forEach((element) => {
-      const button = elementButtons.get(element.id);
-      if (!button) {
+  function showTooltip(button) {
+    if (!button) {
+      return;
+    }
+    button.dataset.tooltipVisible = 'true';
+    if (tooltipTimers.has(button)) {
+      clearTimeout(tooltipTimers.get(button));
+    }
+    const timer = setTimeout(() => {
+      button.dataset.tooltipVisible = 'false';
+      tooltipTimers.delete(button);
+    }, 1400);
+    tooltipTimers.set(button, timer);
+  }
+
+  function matchesQuery(material, query) {
+    if (!query) {
+      return true;
+    }
+    const name = String(material.name ?? '').toLowerCase();
+    const idText = String(material.id ?? '');
+    return name.includes(query) || idText.includes(query);
+  }
+
+  function renderButtons() {
+    availableMaterials.forEach((material) => {
+      if (buttonMap.has(material.id)) {
         return;
       }
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'element-option';
+      button.dataset.materialId = String(material.id);
+      button.dataset.category = material.cat || material.category || '';
+      button.setAttribute('role', 'option');
+      button.setAttribute('aria-selected', 'false');
+
+      const swatch = document.createElement('span');
+      swatch.className = 'element-option-swatch';
+      swatch.style.backgroundColor = colorToCss(material.color);
+
+      const name = document.createElement('span');
+      name.className = 'element-option-label';
+      name.textContent = material.name ?? `Material ${material.id}`;
+
+      button.append(swatch, name);
+
+      if (!material.implemented) {
+        const badge = document.createElement('span');
+        badge.className = 'element-option-badge';
+        badge.textContent = material.ui?.badge || 'WIP';
+        button.dataset.wip = 'true';
+        button.dataset.tooltip = 'Not implemented yet';
+        button.appendChild(badge);
+      }
+
+      button.addEventListener('click', (event) => {
+        event.preventDefault();
+        if (!material.implemented) {
+          showTooltip(button);
+          return;
+        }
+        if (typeof onSelect === 'function') {
+          onSelect(material.id);
+        }
+        updateSelection(material.id);
+        close();
+      });
+
+      buttonMap.set(material.id, { button, material });
+      grid.appendChild(button);
+    });
+  }
+
+  function applyFilters() {
+    const query = searchQuery.trim().toLowerCase();
+    const usingQuery = query.length > 0;
+    buttonMap.forEach(({ button, material }) => {
+      const cat = material.cat || material.category || '';
       let visible = true;
-      if (hasQuery) {
-        const name = String(element.name ?? '').toLowerCase();
-        const icon = String(element.icon ?? '').toLowerCase();
-        visible = name.includes(normalized) || icon.includes(normalized);
+      if (usingQuery) {
+        visible = matchesQuery(material, query);
       } else if (activeCategory) {
-        visible = element.category === activeCategory;
+        visible = cat === activeCategory;
       }
       button.hidden = !visible;
     });
   }
 
-  function syncCategory(category, { user = false } = {}) {
-    let nextCategory = category;
-    if (!nextCategory || !categoryButtons.has(nextCategory)) {
-      nextCategory = fallbackCategory;
+  function updateSelection(id) {
+    selectedId = id;
+    buttonMap.forEach(({ button, material }) => {
+      const selected = material.id === id;
+      button.classList.toggle('selected', selected);
+      button.setAttribute('aria-selected', selected ? 'true' : 'false');
+    });
+  }
+
+  function syncCategory(categoryKey, { user = false } = {}) {
+    let next = categoryKey;
+    if (!next || !categoryButtons.has(next)) {
+      next = fallbackCategory;
     }
-    const changed = activeCategory !== nextCategory;
-    activeCategory = nextCategory;
+    if (activeCategory !== next) {
+      activeCategory = next;
+      applyFilters();
+    }
     categoryButtons.forEach((button, key) => {
       const selected = key === activeCategory;
       button.classList.toggle('active', selected);
       button.setAttribute('aria-selected', selected ? 'true' : 'false');
-      button.tabIndex = selected ? 0 : -1;
-    });
-    if (user) {
-      if (searchDebounce) {
-        window.clearTimeout(searchDebounce);
-        searchDebounce = null;
+      if (selected && user) {
+        button.scrollIntoView({ block: 'nearest', inline: 'center' });
       }
-      searchQuery = '';
-      searchInput.value = '';
-    }
-    if (changed || user) {
-      render();
-    }
+    });
   }
 
-  CATEGORY_ORDER.forEach((category) => {
-    const chip = document.createElement('button');
-    chip.type = 'button';
-    chip.className = 'category-chip';
-    chip.dataset.category = category;
-    chip.textContent = category;
-    chip.setAttribute('role', 'tab');
-    chip.setAttribute('aria-selected', 'false');
-    chip.tabIndex = -1;
-    chip.addEventListener('click', () => {
-      syncCategory(category, { user: true });
-    });
-    chip.addEventListener('keydown', (event) => {
-      if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') {
-        return;
-      }
-      const direction = event.key === 'ArrowRight' ? 1 : -1;
-      const index = CATEGORY_ORDER.indexOf(category);
-      if (index < 0) {
-        return;
-      }
-      let nextIndex = (index + direction + CATEGORY_ORDER.length) % CATEGORY_ORDER.length;
-      const nextCategory = CATEGORY_ORDER[nextIndex];
-      const nextChip = categoryButtons.get(nextCategory);
-      if (nextChip) {
-        event.preventDefault();
-        nextChip.focus();
-        syncCategory(nextCategory, { user: true });
-      }
-    });
-    categoryButtons.set(category, chip);
-    categoryBar.appendChild(chip);
-  });
-
-  safeElements.forEach((element) => {
+  categories.forEach((category) => {
+    const hasAny = availableMaterials.some((material) => (material.cat || material.category) === category.key);
+    if (!hasAny) {
+      return;
+    }
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'element-option';
-    button.dataset.elementId = String(element.id);
-    button.dataset.category = String(element.category ?? '');
-    button.setAttribute('role', 'option');
-    button.setAttribute('aria-selected', 'false');
-    const labelText = element.name ?? `Element ${element.id}`;
-    const iconText = element.icon ? `${element.icon} ` : '';
-    button.setAttribute('aria-label', `${iconText}${labelText}`.trim());
-
-    const iconSpan = document.createElement('span');
-    iconSpan.className = 'element-option-icon';
-    iconSpan.textContent = element.icon ?? '';
-
-    const labelSpan = document.createElement('span');
-    labelSpan.className = 'element-option-label';
-    labelSpan.textContent = labelText;
-
-    button.append(iconSpan, labelSpan);
+    button.className = 'category-chip';
+    button.textContent = category.label;
+    button.dataset.category = category.key;
+    button.setAttribute('role', 'tab');
     button.addEventListener('click', () => {
-      updateSelection(element.id);
-      if (typeof onSelect === 'function') {
-        onSelect(element.id);
-      }
-      close();
+      syncCategory(category.key, { user: true });
     });
-    elementButtons.set(element.id, button);
-    grid.appendChild(button);
+    categoryButtons.set(category.key, button);
+    categoryBar.appendChild(button);
   });
 
-  function handleSearch(value) {
-    searchQuery = value.trim().toLowerCase();
-    render();
-  }
-
-  searchInput.addEventListener('input', () => {
-    const value = searchInput.value;
-    if (searchDebounce) {
-      window.clearTimeout(searchDebounce);
-    }
-    searchDebounce = window.setTimeout(() => {
-      searchDebounce = null;
-      handleSearch(value);
-    }, 120);
-  });
-
-  searchInput.addEventListener('search', () => {
-    if (searchDebounce) {
-      window.clearTimeout(searchDebounce);
-      searchDebounce = null;
-    }
-    handleSearch(searchInput.value);
-  });
-
-  closeButton.addEventListener('click', (event) => {
-    event.preventDefault();
-    close();
-  });
-
-  modal.addEventListener('click', (event) => {
-    if (event.target === modal) {
-      close();
-    }
-  });
-
-  modal.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      close();
-    }
-  });
-
-  function open(trigger) {
+  function open(focusTarget) {
     if (isOpen) {
       return;
     }
     isOpen = true;
-    lastFocused = trigger ?? document.activeElement;
     modal.dataset.open = 'true';
-    modal.removeAttribute('aria-hidden');
+    modal.setAttribute('aria-hidden', 'false');
+    lastFocused = focusTarget || document.activeElement;
+    document.body.style.overflow = 'hidden';
+    modal.focus({ preventScroll: true });
     if (typeof onOpen === 'function') {
       onOpen();
     }
-    render();
     requestAnimationFrame(() => {
       searchInput.focus({ preventScroll: true });
-      if (searchInput.value.length > 0) {
-        searchInput.select();
-      }
+      searchInput.select();
     });
   }
 
-  function close() {
+  function close({ returnFocus = true } = {}) {
     if (!isOpen) {
       return;
     }
     isOpen = false;
     modal.dataset.open = 'false';
     modal.setAttribute('aria-hidden', 'true');
+    document.body.style.overflow = '';
     if (typeof onClose === 'function') {
       onClose();
     }
-    if (lastFocused && typeof lastFocused.focus === 'function') {
+    if (returnFocus && lastFocused && typeof lastFocused.focus === 'function') {
       lastFocused.focus({ preventScroll: true });
     }
     lastFocused = null;
   }
 
+  closeButton.addEventListener('click', () => close());
+  modal.addEventListener('click', (event) => {
+    if (event.target === modal) {
+      close();
+    }
+  });
+  modal.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+    }
+  });
+
+  searchInput.addEventListener('input', (event) => {
+    if (searchDebounce) {
+      clearTimeout(searchDebounce);
+    }
+    const value = String(event.target.value ?? '');
+    searchDebounce = setTimeout(() => {
+      searchQuery = value;
+      applyFilters();
+    }, 80);
+  });
+
+  searchInput.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      const firstVisible = availableMaterials.find((material) => {
+        const entry = buttonMap.get(material.id);
+        return entry && !entry.button.hidden;
+      });
+      if (firstVisible) {
+        buttonMap.get(firstVisible.id)?.button.focus({ preventScroll: true });
+      }
+    }
+  });
+
+  modal.addEventListener('focusin', (event) => {
+    if (!modal.contains(event.target)) {
+      modal.focus({ preventScroll: true });
+    }
+  });
+
+  renderButtons();
   syncCategory(activeCategory);
-  updateSelection(selectedElementId);
-  render();
+  applyFilters();
+  updateSelection(selectedId);
 
   document.body.appendChild(modal);
 
@@ -699,12 +783,16 @@ function createElementModal({ elements = [], onSelect, onOpen, onClose }) {
     isOpen() {
       return isOpen;
     },
-    updateSelection,
-    setActiveCategory(category) {
-      syncCategory(category, { user: false });
-      render();
+    updateSelection(id) {
+      updateSelection(id);
+    },
+    setActiveCategory(categoryKey) {
+      syncCategory(categoryKey, { user: false });
+      applyFilters();
     },
     destroy() {
+      tooltipTimers.forEach((timer) => clearTimeout(timer));
+      tooltipTimers.clear();
       if (modal.parentElement) {
         modal.parentElement.removeChild(modal);
       }
@@ -712,10 +800,11 @@ function createElementModal({ elements = [], onSelect, onOpen, onClose }) {
   };
 }
 
+
 export function initUI({
   Game,
-  elements,
-  palette,
+  materials,
+  categories,
   onPauseToggle,
   onClear,
   onBrushChange,
@@ -780,7 +869,8 @@ export function initUI({
 
   const elementIcon = document.createElement('span');
   elementIcon.className = 'element-pill-icon';
-  elementIcon.textContent = '⏳';
+  elementIcon.textContent = '';
+  elementIcon.style.backgroundColor = 'rgba(150, 160, 220, 0.85)';
 
   const elementPrefix = document.createElement('span');
   elementPrefix.className = 'element-pill-prefix';
@@ -1156,16 +1246,27 @@ export function initUI({
   );
   document.body.appendChild(toolbar);
 
-  const availableElements = (elements || []).filter(Boolean);
+  const materialEntries = Object.values(materials || {}).filter(Boolean);
+  const categoryList = Array.isArray(categories) ? categories : [];
   const elementMap = new Map();
-  availableElements.forEach((item) => {
+  materialEntries.forEach((item) => {
     if (item && typeof item.id === 'number') {
       elementMap.set(item.id, item);
     }
   });
 
+  function colorToCss(color) {
+    if (!Array.isArray(color)) {
+      return 'rgba(150, 160, 220, 0.85)';
+    }
+    const [r = 255, g = 255, b = 255, a = 255] = color;
+    return `rgba(${r}, ${g}, ${b}, ${Math.max(0, Math.min(255, a)) / 255})`;
+  }
+
   const elementPicker = createElementModal({
-    elements: availableElements,
+    materials: materialEntries,
+    categories: categoryList,
+    getCurrentId: () => Game.state.currentElementId,
     onSelect: (id) => {
       if (typeof onElementOpen === 'function') {
         onElementOpen(id);
@@ -1217,16 +1318,16 @@ export function initUI({
     const element = elementMap.get(state.currentElementId);
     if (element) {
       const label = element.name ?? `Element ${element.id}`;
-      elementIcon.textContent = element.icon ?? '•';
+      elementIcon.style.backgroundColor = colorToCss(element.color);
       elementLabel.textContent = label;
       elementButton.dataset.elementId = String(element.id);
       elementButton.setAttribute('aria-label', `Choose element (current: ${label})`);
       elementButton.title = `Choose element (current: ${label})`;
-      if (element?.category) {
-        elementPicker.setActiveCategory(element.category);
+      if (element?.cat || element?.category) {
+        elementPicker.setActiveCategory(element.cat || element.category);
       }
     } else {
-      elementIcon.textContent = '•';
+      elementIcon.style.backgroundColor = colorToCss(null);
       elementLabel.textContent = 'Element';
       elementButton.removeAttribute('data-element-id');
       elementButton.setAttribute('aria-label', 'Choose element');

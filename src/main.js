@@ -1,7 +1,8 @@
 import {
   ELEMENTS,
-  ELEMENT_LIST,
   PALETTE,
+  MATERIAL_CATEGORIES,
+  createPaletteBuffer,
   EMPTY,
   WALL,
   SAND,
@@ -12,6 +13,7 @@ import {
 import { createRenderer } from './render.js';
 import {
   createWorld,
+  initSim,
   beginTick,
   endTick,
   step,
@@ -20,6 +22,7 @@ import {
   getParticleCount,
   idx,
   inBounds,
+  mulberry32,
 } from './sim.js';
 import { initUI } from './ui.js';
 import { serialize, deserialize, SAVE_FILE_VERSION } from './persistence.js';
@@ -40,6 +43,8 @@ const SAVE_SLOTS = [
   { id: 'slot-b', name: 'Slot B' },
   { id: 'slot-c', name: 'Slot C' },
 ];
+
+const PALETTE_BUFFER = createPaletteBuffer();
 
 let cachedStorage = undefined;
 
@@ -468,11 +473,34 @@ function applyLoadedViewport(viewport) {
 }
 
 function installQC() {
-  window.QC = {
+  const qc = {
     ping: () => 'pong',
     count: () => refreshParticleCount(Game.world),
     pause: (value) => setPaused(value ?? !Game.state.paused),
+    listAll: () =>
+      Object.values(Game.materials || ELEMENTS || {}).map((m) => ({
+        id: m.id,
+        name: m.name,
+        cat: m.cat,
+        implemented: Boolean(m.implemented),
+      })),
+    listUnimplemented: () =>
+      Object.values(Game.materials || ELEMENTS || {})
+        .filter((m) => !m?.implemented)
+        .map((m) => m.name),
+    pickById: (id) => setCurrentElement(id),
+    colorOf: (id) => (Array.isArray(PALETTE) ? PALETTE[id] : undefined),
+    demoContact: (a, b) => {
+      const router = Game.interactions?.router;
+      if (!router || typeof router.onContact !== 'function') {
+        return false;
+      }
+      router.onContact(a, b, () => {});
+      return true;
+    },
   };
+
+  window.QC = qc;
 }
 
 function clampViewport(viewport, world) {
@@ -916,9 +944,16 @@ export async function start() {
 
   const world = createWorld(WORLD_WIDTH, WORLD_HEIGHT);
   Game.world = world;
+  const rng = mulberry32(Game.state.seed || 1337);
+  const simCtx = initSim(world, rng);
+  Game.sim = simCtx;
+  Game.interactions = simCtx;
+  Game.materials = ELEMENTS;
+  Game.palette = PALETTE;
+  Game.paletteBuffer = PALETTE_BUFFER;
   syncViewport(world);
 
-  const renderer = createRenderer(canvas, world, PALETTE);
+  const renderer = createRenderer(canvas, world, PALETTE_BUFFER);
   Game.renderer = renderer;
   renderer.draw(world, { viewport: Game.viewport });
 
@@ -983,8 +1018,8 @@ export async function start() {
 
   const ui = initUI({
     Game,
-    elements: ELEMENT_LIST,
-    palette: PALETTE,
+    materials: ELEMENTS,
+    categories: MATERIAL_CATEGORIES,
     onPauseToggle: () => setPaused(),
     onClear: () => {
       clearWorld();
@@ -1039,6 +1074,7 @@ export async function start() {
 
   const api = {
     createWorld,
+    initSim,
     beginTick,
     endTick,
     step,
@@ -1048,8 +1084,11 @@ export async function start() {
     idx,
     inBounds,
     Renderer: { createRenderer },
-    ELEMENTS,
-    PALETTE,
+    mulberry32,
+    materials: ELEMENTS,
+    palette: PALETTE,
+    paletteBuffer: PALETTE_BUFFER,
+    categories: MATERIAL_CATEGORIES,
     EMPTY,
     WALL,
     SAND,
@@ -1093,18 +1132,18 @@ export async function start() {
       return;
     }
     beginTick(Game.world);
-    step(Game.world, { state: Game.state, limits: Game.limits, metrics: Game.metrics });
+    step(Game.world, {
+      state: Game.state,
+      limits: Game.limits,
+      metrics: Game.metrics,
+      router: Game.interactions?.router,
+    });
     endTick(Game.world);
     Game.state.frame += 1;
   }, 1000 / PHYSICS_HZ);
   Game.physicsHandle = physics;
 
-  console.info(
-    '[Powder Mobile] Boot OK | world=%dx%d | elements=%d',
-    Game.world.width,
-    Game.world.height,
-    ELEMENT_LIST.length,
-  );
+  console.info('[Materials] Boot OK — 20 reserved, 2 implemented, interactions router active');
 }
 
 document.addEventListener('DOMContentLoaded', start, { once: true });
