@@ -1,3 +1,18 @@
+import { SAND, WET_SAND } from './elements.js';
+
+const clampColor = (value) => {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  if (value <= 0) {
+    return 0;
+  }
+  if (value >= 255) {
+    return 255;
+  }
+  return Math.round(value);
+};
+
 export function createRenderer(canvas, world, palette) {
   if (!(canvas instanceof HTMLCanvasElement)) {
     throw new TypeError('createRenderer expects a canvas element.');
@@ -50,10 +65,29 @@ export function createRenderer(canvas, world, palette) {
       }
 
       const pixel = i * 4;
-      buffer[pixel] = colorTable[offset] ?? 0;
-      buffer[pixel + 1] = colorTable[offset + 1] ?? 0;
-      buffer[pixel + 2] = colorTable[offset + 2] ?? 0;
-      buffer[pixel + 3] = colorTable[offset + 3] ?? 255;
+      let r = colorTable[offset] ?? 0;
+      let g = colorTable[offset + 1] ?? 0;
+      let b = colorTable[offset + 2] ?? 0;
+      const a = colorTable[offset + 3] ?? 255;
+
+      if (id === SAND || id === WET_SAND) {
+        const hash = Math.imul((i + 1) ^ 0x2c9277b5, 0x85ebca6b) >>> 0;
+        const variation = (hash & 0x07) - 3;
+        const shade = id === WET_SAND ? -6 : 0;
+        const brightness = shade + variation;
+        r = clampColor(r + brightness);
+        g = clampColor(g + brightness);
+        b = clampColor(b + Math.round(brightness * 0.7));
+        if (id === SAND && (hash & 0x10) !== 0) {
+          r = clampColor(r + 2);
+          g = clampColor(g + 1);
+        }
+      }
+
+      buffer[pixel] = r;
+      buffer[pixel + 1] = g;
+      buffer[pixel + 2] = b;
+      buffer[pixel + 3] = a;
     }
   }
 

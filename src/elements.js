@@ -31,14 +31,18 @@ export const WALL = 1;
 export const FIRE = SPECIAL_IDS.FIRE;
 
 export const SAND = MID.SAND;
+export const WET_SAND = MID.WET_SAND;
 export const WATER = MID.WATER;
 export const OIL = MID.OIL;
+export const GLASS = MID.GLASS;
 
 export const ELEMENT_IDS = Object.freeze({
   EMPTY,
   WALL,
   SAND,
+  WET_SAND,
   WATER,
   OIL,
   FIRE,
+  GLASS,
 });

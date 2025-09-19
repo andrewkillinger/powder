@@ -3,6 +3,7 @@
 export const MID = Object.freeze({
   // Powders
   SAND: 2,
+  WET_SAND: 14,
   GUNPOWDER: 10,
   BAKING_SODA: 11,
   PIXIE_DUST: 12,
@@ -25,6 +26,7 @@ export const MID = Object.freeze({
   DRY_ICE: 42,
   NEUTRONIUM_CORE: 43,
   PHILOSOPHERS_STONE: 44,
+  GLASS: 45,
 });
 
 export const MCAT = Object.freeze({
@@ -78,6 +80,17 @@ export const MATERIALS = {
       viscosity: 4,
       lateralRunMax: 1,
       buoyancy: -1,
+    },
+  }),
+  [MID.WET_SAND]: material(MID.WET_SAND, 'Wet Sand', MCAT.POWDER, C(176, 156, 109), {
+    implemented: true,
+    density: 1800,
+    state: 'powder',
+    props: {
+      immovable: false,
+      viscosity: 8,
+      lateralRunMax: 1,
+      buoyancy: -2,
     },
   }),
   [MID.GUNPOWDER]: material(MID.GUNPOWDER, 'Gunpowder', MCAT.POWDER, C(60, 60, 60)),
@@ -146,6 +159,17 @@ export const MATERIALS = {
     MCAT.SOLID,
     C(210, 50, 70),
   ),
+  [MID.GLASS]: material(MID.GLASS, 'Glass', MCAT.SOLID, C(196, 214, 232, 220), {
+    implemented: true,
+    density: 2500,
+    state: 'solid',
+    props: {
+      immovable: false,
+      viscosity: 0,
+      lateralRunMax: 0,
+      buoyancy: -4,
+    },
+  }),
 };
 
 PALETTE[0] = C(7, 9, 15, 255);
