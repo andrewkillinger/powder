@@ -22,6 +22,7 @@ import {
   inBounds,
 } from './sim.js';
 import { initUI } from './ui.js';
+import { serialize, deserialize, SAVE_FILE_VERSION } from './persistence.js';
 import { runSelfChecksAll } from './selfcheck.js';
 
 const SOFT_PARTICLE_CAP = 60000;
@@ -30,6 +31,237 @@ const WORLD_WIDTH = 256;
 const WORLD_HEIGHT = 256;
 const VIEWPORT_MIN_SCALE = 1;
 const VIEWPORT_MAX_SCALE = 4;
+
+const STORAGE_KEY_PREFIX = 'powder.save.slot.';
+const STORAGE_TEST_KEY = 'powder.save.test';
+const SAVE_SLOT_FORMAT_VERSION = 1;
+const SAVE_SLOTS = [
+  { id: 'slot-a', name: 'Slot A' },
+  { id: 'slot-b', name: 'Slot B' },
+  { id: 'slot-c', name: 'Slot C' },
+];
+
+let cachedStorage = undefined;
+
+function getStorage() {
+  if (cachedStorage !== undefined) {
+    return cachedStorage;
+  }
+  cachedStorage = null;
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) {
+      return cachedStorage;
+    }
+    const storage = window.localStorage;
+    storage.setItem(STORAGE_TEST_KEY, '1');
+    storage.removeItem(STORAGE_TEST_KEY);
+    cachedStorage = storage;
+  } catch (error) {
+    console.warn('Local storage unavailable:', error);
+    cachedStorage = null;
+  }
+  return cachedStorage;
+}
+
+function computeByteLength(value) {
+  if (typeof value !== 'string') {
+    return 0;
+  }
+  if (typeof TextEncoder !== 'undefined') {
+    try {
+      return new TextEncoder().encode(value).length;
+    } catch (error) {
+      // ignore encoder failures
+    }
+  }
+  return value.length;
+}
+
+function getSlotDefinition(slotId) {
+  return SAVE_SLOTS.find((slot) => slot.id === slotId) ?? { id: slotId, name: slotId };
+}
+
+function listSaveSlots() {
+  const storage = getStorage();
+  return SAVE_SLOTS.map((slot) => {
+    if (!storage) {
+      return {
+        id: slot.id,
+        name: slot.name,
+        savedAt: null,
+        hasData: false,
+        corrupt: false,
+        bytes: 0,
+        storageAvailable: false,
+      };
+    }
+    const key = `${STORAGE_KEY_PREFIX}${slot.id}`;
+    const raw = storage.getItem(key);
+    if (typeof raw !== 'string') {
+      return {
+        id: slot.id,
+        name: slot.name,
+        savedAt: null,
+        hasData: false,
+        corrupt: false,
+        bytes: 0,
+        storageAvailable: true,
+      };
+    }
+    let payload = null;
+    let corrupt = false;
+    try {
+      payload = JSON.parse(raw);
+    } catch (error) {
+      console.warn(`Corrupt save slot ${slot.id}`, error);
+      corrupt = true;
+    }
+    const savedAt = typeof payload?.savedAt === 'string' ? payload.savedAt : null;
+    const hasWorld = Boolean(payload?.world || payload?.cells);
+    return {
+      id: slot.id,
+      name: slot.name,
+      savedAt,
+      hasData: hasWorld && !corrupt,
+      corrupt,
+      bytes: computeByteLength(raw),
+      storageAvailable: true,
+    };
+  });
+}
+
+function formatSlotTimestamp(value) {
+  if (!value) {
+    return 'Empty';
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return 'Unknown date';
+  }
+  const now = Date.now();
+  const diff = Math.abs(now - date.getTime());
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  if (diff < minute) {
+    return 'Just now';
+  }
+  if (diff < hour) {
+    const mins = Math.round(diff / minute);
+    return `${mins} min ago`;
+  }
+  if (diff < day) {
+    const hours = Math.round(diff / hour);
+    return `${hours} hr ago`;
+  }
+  return date.toLocaleString();
+}
+
+function formatSlotSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return '';
+  }
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${Math.round((bytes / 1024) * 10) / 10} KB`;
+  }
+  const mb = bytes / (1024 * 1024);
+  return `${Math.round(mb * 100) / 100} MB`;
+}
+
+function saveSlot(slotId, world, state, viewport) {
+  const storage = getStorage();
+  if (!storage) {
+    return { ok: false, error: 'Local storage is unavailable.' };
+  }
+  const slot = getSlotDefinition(slotId);
+  let snapshot;
+  try {
+    snapshot = serialize(world);
+  } catch (error) {
+    console.error('Failed to serialize world:', error);
+    return { ok: false, error: 'Unable to serialize world.' };
+  }
+
+  const payload = {
+    formatVersion: SAVE_SLOT_FORMAT_VERSION,
+    worldVersion: SAVE_FILE_VERSION,
+    slot: { id: slot.id, name: slot.name },
+    savedAt: new Date().toISOString(),
+    world: snapshot,
+    state: {
+      seed: state?.seed,
+      frame: state?.frame,
+      brushSize: state?.brushSize,
+      currentElementId: state?.currentElementId,
+      erasing: state?.erasing,
+      paused: state?.paused,
+    },
+    viewport: {
+      scale: viewport?.scale,
+      offsetX: viewport?.offsetX,
+      offsetY: viewport?.offsetY,
+    },
+  };
+
+  let json;
+  try {
+    json = JSON.stringify(payload);
+  } catch (error) {
+    console.error('Failed to encode save payload:', error);
+    return { ok: false, error: 'Unable to encode save payload.' };
+  }
+
+  try {
+    storage.setItem(`${STORAGE_KEY_PREFIX}${slot.id}`, json);
+  } catch (error) {
+    console.error('Failed to write save slot:', error);
+    return { ok: false, error: 'Failed to write to local storage.' };
+  }
+
+  return {
+    ok: true,
+    savedAt: payload.savedAt,
+    bytes: computeByteLength(json),
+  };
+}
+
+function loadSlot(slotId) {
+  const storage = getStorage();
+  if (!storage) {
+    return { ok: false, error: 'Local storage is unavailable.' };
+  }
+  const key = `${STORAGE_KEY_PREFIX}${slotId}`;
+  const raw = storage.getItem(key);
+  if (typeof raw !== 'string') {
+    return { ok: false, error: 'Save slot is empty.', empty: true };
+  }
+
+  let payload = null;
+  try {
+    payload = JSON.parse(raw);
+  } catch (error) {
+    console.warn('Failed to parse save slot data:', error);
+    return { ok: false, error: 'Save data is corrupted.', corrupt: true };
+  }
+
+  const worldData = payload?.world ?? payload;
+  const world = deserialize(worldData);
+  if (!world) {
+    return { ok: false, error: 'Save data is incompatible with this version.' };
+  }
+
+  return {
+    ok: true,
+    world,
+    savedAt: typeof payload?.savedAt === 'string' ? payload.savedAt : null,
+    state: typeof payload?.state === 'object' ? payload.state : null,
+    viewport: typeof payload?.viewport === 'object' ? payload.viewport : null,
+    bytes: computeByteLength(raw),
+  };
+}
 
 // State root – must exist before anything runs
 export const Game = (window.Game = {
@@ -151,6 +383,88 @@ function clearWorld(world = Game.world) {
     world.lifetimes.fill(0);
   }
   refreshParticleCount(world);
+}
+
+function applyLoadedState(state) {
+  let needsEmit = false;
+
+  if (!state || typeof state !== 'object') {
+    if (Game.state.frame !== 0) {
+      Game.state.frame = 0;
+      needsEmit = true;
+    }
+    if (needsEmit) {
+      emitState();
+    }
+    return;
+  }
+
+  if (Number.isFinite(state.seed)) {
+    const nextSeed = Math.trunc(state.seed);
+    if (Game.state.seed !== nextSeed) {
+      Game.state.seed = nextSeed;
+      needsEmit = true;
+    }
+  }
+
+  if (Number.isFinite(state.frame)) {
+    const nextFrame = Math.max(0, Math.trunc(state.frame));
+    if (Game.state.frame !== nextFrame) {
+      Game.state.frame = nextFrame;
+      needsEmit = true;
+    }
+  } else if (Game.state.frame !== 0) {
+    Game.state.frame = 0;
+    needsEmit = true;
+  }
+
+  if (Number.isFinite(state.brushSize)) {
+    setBrushSize(state.brushSize);
+  }
+
+  if (Number.isFinite(state.currentElementId)) {
+    setCurrentElement(state.currentElementId);
+  }
+
+  if (typeof state.erasing === 'boolean') {
+    setEraser(state.erasing);
+  }
+
+  if (typeof state.paused === 'boolean') {
+    setPaused(state.paused);
+  }
+
+  if (needsEmit) {
+    emitState();
+  }
+}
+
+function applyLoadedViewport(viewport) {
+  const target = Game.viewport;
+  if (!target) {
+    return;
+  }
+
+  if (viewport && typeof viewport === 'object') {
+    if (Number.isFinite(viewport.scale)) {
+      target.scale = viewport.scale;
+    }
+    if (Number.isFinite(viewport.offsetX)) {
+      target.offsetX = viewport.offsetX;
+    } else {
+      target.offsetX = 0;
+    }
+    if (Number.isFinite(viewport.offsetY)) {
+      target.offsetY = viewport.offsetY;
+    } else {
+      target.offsetY = 0;
+    }
+  } else {
+    target.offsetX = 0;
+    target.offsetY = 0;
+  }
+
+  syncViewport(Game.world);
 }
 
 function installQC() {
@@ -613,7 +927,59 @@ export async function start() {
     element: overlay,
     update: (info) => updateOverlay(overlay, info),
   };
-  updateOverlay(overlay, { fps: 0, count: refreshParticleCount(world) });
+  function refreshHud() {
+    const count = refreshParticleCount(Game.world);
+    updateOverlay(overlay, { fps: Game.metrics.fps, count });
+  }
+  refreshHud();
+
+  function handleSaveSlotRequest(slotId) {
+    const result = saveSlot(slotId, Game.world, Game.state, Game.viewport);
+    if (!result?.ok && result?.error) {
+      window.alert(result.error);
+    } else if (result?.ok) {
+      console.info(
+        '[Powder Mobile] Saved %s (%s)',
+        slotId,
+        formatSlotSize(result.bytes) || 'size unknown',
+      );
+    }
+    Game.ui?.refreshSlots?.();
+    return result;
+  }
+
+  function handleLoadSlotRequest(slotId) {
+    const result = loadSlot(slotId);
+    if (!result?.ok) {
+      if (!result?.empty && result?.error) {
+        window.alert(result.error);
+      }
+      Game.ui?.refreshSlots?.();
+      return result;
+    }
+
+    const nextWorld = result.world;
+    if (!nextWorld) {
+      return { ok: false, error: 'Loaded save did not contain a world.' };
+    }
+
+    Game.world = nextWorld;
+    applyLoadedViewport(result.viewport);
+    if (renderer?.resize) {
+      renderer.resize(nextWorld);
+    }
+    renderer.draw(nextWorld, { viewport: Game.viewport });
+    refreshParticleCount(nextWorld);
+    refreshHud();
+    applyLoadedState(result.state);
+    Game.ui?.refreshSlots?.();
+    console.info(
+      '[Powder Mobile] Loaded %s (%s)',
+      slotId,
+      formatSlotSize(result.bytes) || 'size unknown',
+    );
+    return result;
+  }
 
   const ui = initUI({
     Game,
@@ -623,7 +989,7 @@ export async function start() {
     onClear: () => {
       clearWorld();
       renderer.draw(Game.world, { viewport: Game.viewport });
-      updateOverlay(overlay, { fps: Game.metrics.fps, count: Game.metrics.particles });
+      refreshHud();
     },
     onBrushChange: (value) => setBrushSize(value),
     onZoomChange: (level) => {
@@ -638,6 +1004,11 @@ export async function start() {
       setEraser(false);
     },
     onEraserToggle: () => setEraser(),
+    getSlots: () => listSaveSlots(),
+    onSaveSlot: handleSaveSlotRequest,
+    onLoadSlot: handleLoadSlotRequest,
+    formatSlotTimestamp,
+    formatSlotSize,
   });
   Game.ui = ui;
 
@@ -645,6 +1016,9 @@ export async function start() {
     ui.update(state);
   });
   ui.update(Game.state);
+  if (ui.refreshSlots) {
+    ui.refreshSlots();
+  }
 
   attachPointerHandlers(canvas);
 
