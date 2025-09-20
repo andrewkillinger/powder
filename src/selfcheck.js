@@ -180,12 +180,12 @@ export async function runSelfChecksAll(Game, api) {
         return 'Renderer.createRenderer must be a function.';
       }
       const world = api.createWorld(4, 4);
-      const renderer = rendererFactory(canvas, world, api.paletteBuffer);
-      renderer.draw(world);
+      const renderer = rendererFactory(canvas, world, api.materials || Game.materials);
+      renderer.draw(world, { frameSeed: Game.state?.frame ?? 0 });
       const ctx = canvas.getContext('2d');
       const before = ctx.getImageData(0, 0, 4, 4).data.slice();
       world.cells[0] = Game.state.currentElementId ?? 1;
-      renderer.draw(world);
+      renderer.draw(world, { frameSeed: (Game.state?.frame ?? 0) + 1 });
       const after = ctx.getImageData(0, 0, 4, 4).data;
       if (!compareCellArrays(before, after)) {
         return 'Renderer draw should change pixels when world updates.';
@@ -198,13 +198,13 @@ export async function runSelfChecksAll(Game, api) {
     () => {
       const categories = Array.isArray(api.categories) ? api.categories : [];
       const categoryKeys = categories.map((c) => c.key);
-      if (categoryKeys.length !== 4) {
-        return 'Expected four material categories (powder/gas/liquid/solid).';
+      if (categoryKeys.length !== 5) {
+        return 'Expected five material categories (powder/gas/liquid/solid/combustion).';
       }
       const materials = Object.values(Game.materials || api.materials || {})
         .filter((m) => m && categoryKeys.includes(m.cat));
-      if (materials.length !== 20) {
-        return `Expected 20 reserved materials, found ${materials.length}.`;
+      if (materials.length !== 38) {
+        return `Expected 38 reserved materials, found ${materials.length}.`;
       }
       const idSet = new Set();
       for (const material of materials) {
@@ -236,6 +236,160 @@ export async function runSelfChecksAll(Game, api) {
       const implementedIds = new Set(implemented.map((m) => m.id));
       if (!implementedIds.has(api.SAND) || !implementedIds.has(api.WATER)) {
         return 'Sand and Water must be marked as implemented.';
+      }
+      return null;
+    },
+  ]);
+
+  await runPhase('Phase Style', [
+    () => {
+      const materials = Object.values(Game.materials || api.materials || {});
+      for (const material of materials) {
+        if (!material?.style || typeof material.style !== 'object') {
+          return `Material ${material?.name ?? material?.id ?? '?'} is missing style metadata.`;
+        }
+        const { layer, alpha, jitter } = material.style;
+        if (typeof layer !== 'string' || layer.length === 0) {
+          return `Material ${material.name} must define style.layer.`;
+        }
+        if (!Number.isFinite(alpha)) {
+          return `Material ${material.name} must define style.alpha.`;
+        }
+        if (!Number.isFinite(jitter)) {
+          return `Material ${material.name} must define style.jitter.`;
+        }
+        if (material.cat === 'gas' && layer !== 'gas') {
+          return `Gas material ${material.name} must render on the gas layer.`;
+        }
+        if (material.cat === 'gas' && alpha >= 255) {
+          return `Gas material ${material.name} must be semi-transparent (alpha < 255).`;
+        }
+      }
+      return null;
+    },
+    () => {
+      const rendererFactory = api.Renderer?.createRenderer;
+      if (typeof rendererFactory !== 'function') {
+        return 'Renderer.createRenderer unavailable for layering test.';
+      }
+      if (typeof api.createWorld !== 'function') {
+        return 'createWorld unavailable for layering test.';
+      }
+      const world = api.createWorld(2, 1);
+      if (!world) {
+        return 'Unable to create test world for layering.';
+      }
+      world.cells[0] = api.SAND ?? 1;
+      world.cells[1] = api.STEAM ?? 0;
+      const canvas = document.createElement('canvas');
+      canvas.width = 2;
+      canvas.height = 1;
+      const renderer = rendererFactory(canvas, world, Game.materials || api.materials || {});
+      renderer.draw(world, { frameSeed: Game.state?.frame ?? 0 });
+      const ctx = canvas.getContext('2d');
+      const pixels = ctx.getImageData(0, 0, 2, 1).data;
+      const baseAlpha = pixels[3];
+      const gasAlpha = pixels[7];
+      if (baseAlpha < 200) {
+        return 'Base layer pixel should remain opaque in layered render.';
+      }
+      if (gasAlpha >= 255) {
+        return 'Gas overlay pixel should be semi-transparent (<255 alpha).';
+      }
+      return null;
+    },
+  ]);
+
+  await runPhase('Phase Combustion', [
+    () => {
+      const categories = Array.isArray(api.categories) ? api.categories : [];
+      const combustion = categories.find((category) => category?.key === 'combustion');
+      if (!combustion) {
+        return 'Combustion category missing from material list.';
+      }
+      const materials = Object.values(Game.materials || api.materials || {});
+      const combustionMaterials = materials.filter((material) => material?.cat === 'combustion');
+      if (combustionMaterials.length !== 6) {
+        return `Combustion category must contain six materials (found ${combustionMaterials.length}).`;
+      }
+      const implemented = combustionMaterials.filter((material) => material.implemented);
+      const fireId = api.FIRE ?? 0;
+      if (implemented.length !== 1 || implemented[0]?.id !== fireId) {
+        return 'Only Fire should be implemented in the Combustion category.';
+      }
+      const wipCount = combustionMaterials.length - implemented.length;
+      if (wipCount !== 5) {
+        return 'Five Combustion materials should remain marked as WIP placeholders.';
+      }
+      return null;
+    },
+  ]);
+
+  await runPhase('Phase Scaling', [
+    () => {
+      const canvas = document.getElementById('game');
+      if (!(canvas instanceof HTMLCanvasElement)) {
+        return '#game canvas missing for responsive scaling check.';
+      }
+      const styleBefore = getComputedStyle(canvas);
+      const beforeCssWidth = parseFloat(styleBefore.width) || 0;
+      const beforeCssHeight = parseFloat(styleBefore.height) || 0;
+      const beforeBackingWidth = canvas.width;
+      const beforeBackingHeight = canvas.height;
+
+      const descriptorWidth = Object.getOwnPropertyDescriptor(window, 'innerWidth');
+      const descriptorHeight = Object.getOwnPropertyDescriptor(window, 'innerHeight');
+      if (descriptorWidth && descriptorWidth.configurable === false) {
+        return 'Window innerWidth is not configurable; cannot verify responsive scaling.';
+      }
+      if (descriptorHeight && descriptorHeight.configurable === false) {
+        return 'Window innerHeight is not configurable; cannot verify responsive scaling.';
+      }
+
+      const mockWidth = Math.max(240, Math.round((beforeCssHeight || window.innerHeight || 600) * 1.25));
+      const mockHeight = Math.max(240, Math.round((beforeCssWidth || window.innerWidth || 800) * 0.75));
+
+      let overridesApplied = false;
+      try {
+        Object.defineProperty(window, 'innerWidth', {
+          configurable: true,
+          get: () => mockWidth,
+        });
+        Object.defineProperty(window, 'innerHeight', {
+          configurable: true,
+          get: () => mockHeight,
+        });
+        overridesApplied = true;
+        window.dispatchEvent(new Event('resize'));
+        const styleAfter = getComputedStyle(canvas);
+        const afterCssWidth = parseFloat(styleAfter.width) || 0;
+        const afterCssHeight = parseFloat(styleAfter.height) || 0;
+        const afterBackingWidth = canvas.width;
+        const afterBackingHeight = canvas.height;
+        const cssChanged =
+          Math.abs(afterCssWidth - beforeCssWidth) > 1 || Math.abs(afterCssHeight - beforeCssHeight) > 1;
+        if (!cssChanged) {
+          return 'Canvas CSS size should respond to window resize events.';
+        }
+        if (afterBackingWidth !== beforeBackingWidth || afterBackingHeight !== beforeBackingHeight) {
+          return 'Canvas backing resolution should remain fixed after resize.';
+        }
+      } catch (error) {
+        return `Resize simulation failed: ${error?.message || error}`;
+      } finally {
+        if (overridesApplied) {
+          if (descriptorWidth) {
+            Object.defineProperty(window, 'innerWidth', descriptorWidth);
+          } else {
+            delete window.innerWidth;
+          }
+          if (descriptorHeight) {
+            Object.defineProperty(window, 'innerHeight', descriptorHeight);
+          } else {
+            delete window.innerHeight;
+          }
+          window.dispatchEvent(new Event('resize'));
+        }
       }
       return null;
     },

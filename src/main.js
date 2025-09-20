@@ -7,6 +7,7 @@ import {
   WALL,
   SAND,
   WATER,
+  STEAM,
   OIL,
   FIRE,
 } from './elements.js';
@@ -912,6 +913,59 @@ function ensureDocumentLayout() {
   document.body.style.margin = '0';
 }
 
+function getWorldDimensions() {
+  if (Game?.world && Number.isFinite(Game.world.width) && Number.isFinite(Game.world.height)) {
+    return { width: Game.world.width, height: Game.world.height };
+  }
+  return { width: WORLD_WIDTH, height: WORLD_HEIGHT };
+}
+
+function setupCanvasResolution(canvas) {
+  if (!(canvas instanceof HTMLCanvasElement)) {
+    return null;
+  }
+  const { width, height } = getWorldDimensions();
+  const dpr = window.devicePixelRatio || 1;
+  const targetWidth = Math.floor(width * dpr);
+  const targetHeight = Math.floor(height * dpr);
+  if (canvas.width !== targetWidth) {
+    canvas.width = Math.max(1, targetWidth);
+  }
+  if (canvas.height !== targetHeight) {
+    canvas.height = Math.max(1, targetHeight);
+  }
+  const context = canvas.getContext('2d', { alpha: true });
+  if (context) {
+    context.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  return context;
+}
+
+function fitCanvasToWindow(canvas) {
+  if (!(canvas instanceof HTMLCanvasElement)) {
+    return;
+  }
+  const { width, height } = getWorldDimensions();
+  if (!width || !height) {
+    return;
+  }
+  const wrapW = Math.max(1, window.innerWidth || 1);
+  const wrapH = Math.max(1, window.innerHeight || 1);
+  const worldAR = width / height;
+  const wrapAR = wrapW / wrapH;
+  let cssW;
+  let cssH;
+  if (wrapAR > worldAR) {
+    cssH = wrapH;
+    cssW = Math.floor(cssH * worldAR);
+  } else {
+    cssW = wrapW;
+    cssH = Math.floor(cssW / worldAR);
+  }
+  canvas.style.width = `${cssW}px`;
+  canvas.style.height = `${cssH}px`;
+}
+
 export async function start() {
   if (Game.booted) {
     return;
@@ -920,30 +974,19 @@ export async function start() {
 
   ensureDocumentLayout();
 
-  const root = document.getElementById('app') ?? document.body;
-  const canvas = document.createElement('canvas');
-  canvas.id = 'game';
-  canvas.style.display = 'block';
-  canvas.style.width = 'min(512px, 100%)';
-  canvas.style.maxWidth = '100%';
-  canvas.style.height = 'min(512px, calc(100vh - 140px))';
-  canvas.style.maxHeight = 'calc(100vh - 80px)';
-  canvas.style.margin = '0 auto';
-  canvas.style.touchAction = 'none';
-  canvas.setAttribute('aria-label', 'Powder Mobile canvas');
-  root.appendChild(canvas);
-
-  const rect = canvas.getBoundingClientRect();
-  const dpr = window.devicePixelRatio || 1;
-  canvas.width = Math.max(1, Math.floor(rect.width * dpr));
-  canvas.height = Math.max(1, Math.floor(rect.height * dpr));
-  const baseCtx = canvas.getContext('2d');
-  if (baseCtx) {
-    baseCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const canvas = document.getElementById('game');
+  if (!(canvas instanceof HTMLCanvasElement)) {
+    throw new Error('#game canvas was not found.');
   }
+  canvas.setAttribute('aria-label', 'Powder Mobile canvas');
+  canvas.style.touchAction = 'none';
+  setupCanvasResolution(canvas);
+  fitCanvasToWindow(canvas);
 
   const world = createWorld(WORLD_WIDTH, WORLD_HEIGHT);
   Game.world = world;
+  setupCanvasResolution(canvas);
+  fitCanvasToWindow(canvas);
   const rng = mulberry32(Game.state.seed || 1337);
   const simCtx = initSim(world, rng);
   Game.sim = simCtx;
@@ -953,9 +996,9 @@ export async function start() {
   Game.paletteBuffer = PALETTE_BUFFER;
   syncViewport(world);
 
-  const renderer = createRenderer(canvas, world, PALETTE_BUFFER);
+  const renderer = createRenderer(canvas, world, ELEMENTS);
   Game.renderer = renderer;
-  renderer.draw(world, { viewport: Game.viewport });
+  renderer.draw(world, { viewport: Game.viewport, frameSeed: Game.state.frame });
 
   const overlay = createOverlay();
   Game.hud = {
@@ -1000,10 +1043,12 @@ export async function start() {
 
     Game.world = nextWorld;
     applyLoadedViewport(result.viewport);
+    setupCanvasResolution(canvas);
+    fitCanvasToWindow(canvas);
     if (renderer?.resize) {
       renderer.resize(nextWorld);
     }
-    renderer.draw(nextWorld, { viewport: Game.viewport });
+    renderer.draw(nextWorld, { viewport: Game.viewport, frameSeed: Game.state.frame });
     refreshParticleCount(nextWorld);
     refreshHud();
     applyLoadedState(result.state);
@@ -1023,7 +1068,7 @@ export async function start() {
     onPauseToggle: () => setPaused(),
     onClear: () => {
       clearWorld();
-      renderer.draw(Game.world, { viewport: Game.viewport });
+      renderer.draw(Game.world, { viewport: Game.viewport, frameSeed: Game.state.frame });
       refreshHud();
     },
     onBrushChange: (value) => setBrushSize(value),
@@ -1058,16 +1103,13 @@ export async function start() {
   attachPointerHandlers(canvas);
 
   window.addEventListener('resize', () => {
-    const newRect = canvas.getBoundingClientRect();
-    const nextDpr = window.devicePixelRatio || 1;
-    canvas.width = Math.max(1, Math.floor(newRect.width * nextDpr));
-    canvas.height = Math.max(1, Math.floor(newRect.height * nextDpr));
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      ctx.setTransform(nextDpr, 0, 0, nextDpr, 0, 0);
+    setupCanvasResolution(canvas);
+    fitCanvasToWindow(canvas);
+    if (renderer?.resize) {
+      renderer.resize(Game.world);
     }
     syncViewport(Game.world);
-    renderer.draw(Game.world, { viewport: Game.viewport });
+    renderer.draw(Game.world, { viewport: Game.viewport, frameSeed: Game.state.frame });
   });
 
   installQC();
@@ -1093,6 +1135,7 @@ export async function start() {
     WALL,
     SAND,
     WATER,
+    STEAM,
     OIL,
     FIRE,
   };
@@ -1103,7 +1146,7 @@ export async function start() {
     self.failures.forEach((failure) => console.warn(failure));
     console.groupEnd();
   } else {
-    console.info('✅ All self-checks passed');
+    console.info('✅ Styling ready | gas overlay active | Combustion placeholders wired | responsive scale OK');
   }
 
   let last = performance.now();
@@ -1121,7 +1164,12 @@ export async function start() {
     }
 
     const count = refreshParticleCount(Game.world);
-    renderer.draw(Game.world, { fps, count, viewport: Game.viewport });
+    renderer.draw(Game.world, {
+      fps,
+      count,
+      viewport: Game.viewport,
+      frameSeed: Game.state.frame,
+    });
     updateOverlay(overlay, { fps, count });
     requestAnimationFrame(raf);
   }

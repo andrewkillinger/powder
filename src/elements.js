@@ -62,6 +62,11 @@ export const CARBON_DIOXIDE = MID.CARBON_DIOXIDE;
 export const PIXIE_SPARK = MID.PIXIE_SPARK;
 export const PHILOSOPHERS_STONE = MID.PHILOSOPHERS_STONE;
 export const GOLD = MID.GOLD;
+export const DUST_CLOUD = MID.DUST_CLOUD;
+export const THERMITE = MID.THERMITE;
+export const NITRO_SLURRY = MID.NITRO_SLURRY;
+export const PLASMA_ARC = MID.PLASMA_ARC;
+export const SODIUM_METAL = MID.SODIUM_METAL;
 
 export const ELEMENT_IDS = Object.freeze({
   EMPTY,
@@ -99,4 +104,9 @@ export const ELEMENT_IDS = Object.freeze({
   PIXIE_SPARK,
   PHILOSOPHERS_STONE,
   GOLD,
+  DUST_CLOUD,
+  THERMITE,
+  NITRO_SLURRY,
+  PLASMA_ARC,
+  SODIUM_METAL,
 });
