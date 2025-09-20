@@ -13,19 +13,21 @@ function injectStyles() {
   style.textContent = `
     #${TOOLBAR_ID} {
       position: fixed;
-      top: 0;
+      bottom: 0;
+      top: auto;
       left: 0;
       right: 0;
       display: flex;
       flex-wrap: wrap;
+      justify-content: center;
       align-items: center;
       gap: 0.5rem;
-      padding: 0.5rem 0.75rem;
+      padding: 0.65rem 0.75rem calc(0.85rem + env(safe-area-inset-bottom, 0px));
       background: rgba(10, 15, 26, 0.92);
       color: #f5f7ff;
       z-index: 1000;
       font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      box-shadow: 0 8px 18px rgba(0, 0, 0, 0.3);
+      box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.32);
       backdrop-filter: blur(14px);
     }
 
@@ -104,17 +106,6 @@ function injectStyles() {
     #${TOOLBAR_ID} label {
       color: #d0d5f8;
       font-size: 0.9rem;
-    }
-
-    #${TOOLBAR_ID} .zoom-controls {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.35rem;
-    }
-
-    #${TOOLBAR_ID} .zoom-controls button {
-      min-width: 56px;
-      font-weight: 600;
     }
 
     #${TOOLBAR_ID} #${SLOT_MENU_ID} {
@@ -224,6 +215,7 @@ function injectStyles() {
       align-items: flex-end;
       justify-content: center;
       padding: 1rem;
+      padding-bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
       background: rgba(5, 8, 14, 0.55);
       backdrop-filter: blur(8px);
       z-index: 1100;
@@ -236,8 +228,8 @@ function injectStyles() {
     #${MENU_ID} .panel {
       background: rgba(16, 23, 38, 0.96);
       color: #f5f7ff;
-      border-radius: 22px 22px 16px 16px;
-      padding: 1rem 1.25rem 1.25rem;
+      border-radius: 20px 20px 0 0;
+      padding: 1rem 1.25rem calc(1.25rem + env(safe-area-inset-bottom, 0px));
       width: min(520px, 100%);
       max-height: min(640px, calc(100vh - 2rem));
       display: flex;
@@ -809,7 +801,6 @@ export function initUI({
   onPauseToggle,
   onClear,
   onBrushChange,
-  onZoomChange,
   onElementOpen,
   onEraserToggle,
   getSlots,
@@ -925,27 +916,6 @@ export function initUI({
   brushValue.textContent = brushInput.value;
 
   brushLabel.append(brushInput, brushValue);
-
-  const zoomControls = document.createElement('div');
-  zoomControls.className = 'zoom-controls';
-  zoomControls.setAttribute('role', 'group');
-  zoomControls.setAttribute('aria-label', 'Zoom level');
-  const zoomButtons = [];
-  [1, 2, 4].forEach((level) => {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.textContent = `${level}x`;
-    button.dataset.zoomLevel = String(level);
-    button.setAttribute('aria-pressed', 'false');
-    button.setAttribute('aria-label', `Set zoom to ${level}x`);
-    button.addEventListener('click', () => {
-      if (typeof onZoomChange === 'function') {
-        onZoomChange(level);
-      }
-    });
-    zoomControls.appendChild(button);
-    zoomButtons.push({ level, button });
-  });
 
   const eraserButton = document.createElement('button');
   eraserButton.type = 'button';
@@ -1241,7 +1211,6 @@ export function initUI({
     saveButton,
     loadButton,
     brushLabel,
-    zoomControls,
     eraserButton,
     slotMenu,
   );
@@ -1334,13 +1303,6 @@ export function initUI({
       elementButton.setAttribute('aria-label', 'Choose element');
       elementButton.title = 'Choose element';
     }
-
-    const zoomLevel = Number(state.zoom);
-    zoomButtons.forEach(({ level, button }) => {
-      const active = Number.isFinite(zoomLevel) && Math.abs(zoomLevel - level) < 0.05;
-      button.classList.toggle('active', active);
-      button.setAttribute('aria-pressed', active ? 'true' : 'false');
-    });
 
     elementPicker.updateSelection(state.currentElementId);
     pauseButton.classList.toggle('active', Boolean(state.paused));

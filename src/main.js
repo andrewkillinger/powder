@@ -945,25 +945,16 @@ function fitCanvasToWindow(canvas) {
   if (!(canvas instanceof HTMLCanvasElement)) {
     return;
   }
-  const { width, height } = getWorldDimensions();
-  if (!width || !height) {
-    return;
-  }
-  const wrapW = Math.max(1, window.innerWidth || 1);
-  const wrapH = Math.max(1, window.innerHeight || 1);
-  const worldAR = width / height;
-  const wrapAR = wrapW / wrapH;
-  let cssW;
-  let cssH;
-  if (wrapAR > worldAR) {
-    cssH = wrapH;
-    cssW = Math.floor(cssH * worldAR);
-  } else {
-    cssW = wrapW;
-    cssH = Math.floor(cssW / worldAR);
-  }
-  canvas.style.width = `${cssW}px`;
-  canvas.style.height = `${cssH}px`;
+  const viewportWidth = Math.max(
+    1,
+    window.innerWidth || document.documentElement.clientWidth || 1,
+  );
+  const viewportHeight = Math.max(
+    1,
+    window.innerHeight || document.documentElement.clientHeight || 1,
+  );
+  canvas.style.width = `${viewportWidth}px`;
+  canvas.style.height = `${viewportHeight}px`;
 }
 
 export async function start() {
@@ -1072,13 +1063,6 @@ export async function start() {
       refreshHud();
     },
     onBrushChange: (value) => setBrushSize(value),
-    onZoomChange: (level) => {
-      const rectNow = canvas.getBoundingClientRect();
-      const centerX = rectNow.left + rectNow.width / 2;
-      const centerY = rectNow.top + rectNow.height / 2;
-      const anchor = pointerToWorld(canvas, { clientX: centerX, clientY: centerY });
-      setViewportScale(level, { canvas, centerX, centerY, anchorWorld: anchor });
-    },
     onElementOpen: (id) => {
       setCurrentElement(id);
       setEraser(false);
