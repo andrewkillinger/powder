@@ -606,7 +606,8 @@ function createElementModal({
         badge.className = 'element-option-badge';
         badge.textContent = material.ui?.badge || 'WIP';
         button.dataset.wip = 'true';
-        button.dataset.tooltip = 'Not implemented yet';
+        button.dataset.tooltip = 'Coming soon';
+        button.setAttribute('aria-disabled', 'true');
         button.appendChild(badge);
       }
 
