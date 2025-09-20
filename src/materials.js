@@ -604,14 +604,29 @@ export const MATERIALS = {
     MCAT.COMBUSTION,
     C(220, 210, 180, 120),
     {
-      implemented: false,
+      implemented: true,
       state: 'gas',
-      style: style(C(220, 210, 180, 120), { layer: 'gas', alpha: 120, jitter: 10, grain: false }),
+      density: 35,
+      props: {
+        volatility: 0.55,
+        lifetime: 220,
+      },
+      style: style(C(220, 210, 180, 120), { layer: 'gas', alpha: 130, jitter: 12, grain: false }),
     },
   ),
   [MID.THERMITE]: material(MID.THERMITE, 'Thermite', MCAT.COMBUSTION, C(140, 120, 110, 255), {
-    implemented: false,
+    implemented: true,
     state: 'powder',
+    density: 4200,
+    props: {
+      viscosity: 2,
+      lateralRunMax: 1,
+      ignition: {
+        sparkChance: 0.4,
+        oxygenBonus: 0.12,
+        waterQuenchChance: 0.45,
+      },
+    },
     style: style(C(140, 120, 110, 255), { layer: 'powder', jitter: 14, grain: true }),
   }),
   [MID.NITRO_SLURRY]: material(
@@ -620,9 +635,23 @@ export const MATERIALS = {
     MCAT.COMBUSTION,
     C(235, 250, 245, 255),
     {
-      implemented: false,
+      implemented: true,
       state: 'liquid',
-      style: style(C(235, 250, 245, 255), { layer: 'liquid', alpha: 230, jitter: 6, grain: false }),
+      density: 1150,
+      props: {
+        viscosity: 3,
+        lateralRunMax: 3,
+        buoyancy: -1,
+        volatility: 0.4,
+        explosion: {
+          radius: 4,
+          fireLifetime: 140,
+          steamLifetime: 120,
+          pushDistance: 3,
+          gasId: MID.CARBON_DIOXIDE,
+        },
+      },
+      style: style(C(235, 250, 245, 255), { layer: 'liquid', alpha: 235, jitter: 6, grain: false }),
     },
   ),
   [MID.PLASMA_ARC]: material(
@@ -631,9 +660,15 @@ export const MATERIALS = {
     MCAT.COMBUSTION,
     C(160, 220, 255, 160),
     {
-      implemented: false,
+      implemented: true,
       state: 'gas',
-      style: style(C(160, 220, 255, 160), { layer: 'fx', alpha: 160, jitter: 20, grain: false }),
+      density: 4,
+      props: {
+        lifetime: 80,
+        sparkChance: 0.45,
+        igniteChance: 0.7,
+      },
+      style: style(C(160, 220, 255, 160), { layer: 'fx', alpha: 210, jitter: 24, grain: false }),
     },
   ),
   [MID.SODIUM_METAL]: material(
@@ -642,8 +677,17 @@ export const MATERIALS = {
     MCAT.COMBUSTION,
     C(200, 200, 160, 255),
     {
-      implemented: false,
+      implemented: true,
       state: 'solid',
+      density: 970,
+      props: {
+        reaction: {
+          waterChance: 0.6,
+          fireLifetime: 90,
+          hydrogenLifetime: 160,
+          bursts: 4,
+        },
+      },
       style: style(C(200, 200, 160, 255), { layer: 'solid', jitter: 10, grain: true }),
     },
   ),

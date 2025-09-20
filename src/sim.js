@@ -34,6 +34,11 @@ import {
   PHILOSOPHERS_STONE,
   GOLD,
   ECTOPLASM,
+  DUST_CLOUD,
+  THERMITE,
+  NITRO_SLURRY,
+  PLASMA_ARC,
+  SODIUM_METAL,
   getMaterial,
 } from './elements.js';
 import { createInteractionRouter } from './interactions.js';
@@ -202,6 +207,29 @@ const UMBRA_LATERAL_DIFFUSE_CHANCE = 0.35;
 const ECTOPLASM_EVAPORATE_CHANCE = 0.008;
 const ECTOPLASM_REFORM_LIFETIME = 200;
 
+const DUST_CLOUD_DEFAULT_LIFETIME = 220;
+const DUST_CLOUD_SETTLE_CHANCE = 0.015;
+const DUST_CLOUD_BASE_VOLATILITY = 0.5;
+
+const THERMITE_SPARK_CHANCE = 0.35;
+const THERMITE_OXYGEN_BONUS = 0.12;
+const THERMITE_WATER_QUENCH_CHANCE = 0.45;
+
+const NITRO_SLURRY_DEFAULT_VOLATILITY = 0.35;
+const NITRO_SLURRY_BLAST_RADIUS = 4;
+const NITRO_SLURRY_FIRE_LIFETIME = 140;
+const NITRO_SLURRY_STEAM_LIFETIME = 120;
+const NITRO_SLURRY_PUSH_DISTANCE = 3;
+
+const PLASMA_ARC_DEFAULT_LIFETIME = 80;
+const PLASMA_ARC_SPARK_CHANCE = 0.45;
+const PLASMA_ARC_IGNITE_CHANCE = 0.7;
+
+const SODIUM_WATER_REACTION_CHANCE = 0.6;
+const SODIUM_FIRE_LIFETIME = 90;
+const SODIUM_HYDROGEN_LIFETIME = 160;
+const SODIUM_HYDROGEN_BURSTS = 4;
+
 const SURROUNDING_OFFSETS = [
   [0, -1],
   [-1, 0],
@@ -369,6 +397,18 @@ function igniteCellAt(world, index, productId = FIRE) {
     setLifetime(world, index, 0);
   }
   return true;
+}
+
+function forceIgnite(world, index, lifetime = 0) {
+  if (!world || !world.cells) {
+    return;
+  }
+  if (!igniteCellAt(world, index, FIRE)) {
+    transformCell(world, index, FIRE);
+  }
+  if (Number.isFinite(lifetime) && lifetime > 0) {
+    setLifetime(world, index, lifetime);
+  }
 }
 
 function mulberry32(seed) {
@@ -1517,6 +1557,73 @@ function updateGold(world, x, y) {
   updateFallingSolid(world, x, y, GOLD);
 }
 
+function updateSodiumMetal(world, x, y) {
+  const width = world.width;
+  const height = world.height;
+  const index = y * width + x;
+  const cells = world.cells;
+  const metadata = getMeta(SODIUM_METAL) || {};
+  const reaction = metadata.reaction || {};
+  const waterChance = clamp01(
+    Number.isFinite(reaction.waterChance) ? reaction.waterChance : SODIUM_WATER_REACTION_CHANCE,
+  );
+  const fireLifetime = Number.isFinite(reaction.fireLifetime)
+    ? reaction.fireLifetime
+    : SODIUM_FIRE_LIFETIME;
+  const hydrogenLifetime = Number.isFinite(reaction.hydrogenLifetime)
+    ? reaction.hydrogenLifetime
+    : SODIUM_HYDROGEN_LIFETIME;
+  const bursts = Math.max(
+    1,
+    Math.trunc(Number.isFinite(reaction.bursts) ? reaction.bursts : SODIUM_HYDROGEN_BURSTS),
+  );
+
+  for (let i = 0; i < SURROUNDING_OFFSETS.length; i += 1) {
+    const [dx, dy] = SURROUNDING_OFFSETS[i];
+    const nx = x + dx;
+    const ny = y + dy;
+    if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
+      continue;
+    }
+    const neighborIndex = ny * width + nx;
+    const neighborId = cells[neighborIndex];
+    if (neighborId === FIRE || neighborId === PLASMA_ARC) {
+      forceIgnite(world, index, fireLifetime);
+      emitGasAround(world, index, HYDROGEN, bursts, hydrogenLifetime);
+      return;
+    }
+    if (isWaterLike(neighborId)) {
+      if (randomChance(waterChance)) {
+        spawnSteam(world, neighborIndex, Math.max(120, hydrogenLifetime));
+        emitGasAround(world, index, HYDROGEN, bursts, hydrogenLifetime);
+        forceIgnite(world, index, fireLifetime);
+        return;
+      }
+      continue;
+    }
+    if (neighborId === ICE) {
+      transformCell(world, neighborIndex, WATER);
+      if (randomChance(waterChance * 0.5)) {
+        spawnSteam(world, neighborIndex, Math.max(90, hydrogenLifetime));
+        emitGasAround(world, index, HYDROGEN, bursts, hydrogenLifetime);
+        forceIgnite(world, index, fireLifetime);
+        return;
+      }
+      continue;
+    }
+    if (neighborId === ACID) {
+      if (randomChance(0.4)) {
+        emitGasAround(world, neighborIndex, HYDROGEN, Math.max(2, bursts - 1), hydrogenLifetime);
+        forceIgnite(world, index, fireLifetime);
+        return;
+      }
+      continue;
+    }
+  }
+
+  updateFallingSolid(world, x, y, SODIUM_METAL);
+}
+
 function updatePhilosophersStone(world, x, y) {
   const width = world.width;
   const height = world.height;
@@ -1623,6 +1730,163 @@ function spawnGas(world, index, id, lifetime = 0) {
   if (Number.isFinite(lifetime) && lifetime > 0) {
     setLifetime(world, index, lifetime);
   }
+}
+
+function igniteThermiteAt(world, index) {
+  if (!world || !world.cells) {
+    return;
+  }
+  transformCell(world, index, MOLTEN_IRON, MOLTEN_IRON_INITIAL_LIFETIME);
+  const width = world.width;
+  const height = world.height;
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return;
+  }
+  const cells = world.cells;
+  const x = index % width;
+  const y = Math.floor(index / width);
+
+  for (let i = 0; i < SURROUNDING_OFFSETS.length; i += 1) {
+    const [dx, dy] = SURROUNDING_OFFSETS[i];
+    const nx = x + dx;
+    const ny = y + dy;
+    if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
+      continue;
+    }
+    const neighborIndex = ny * width + nx;
+    const neighborId = cells[neighborIndex];
+    if (neighborId === THERMITE) {
+      igniteThermiteAt(world, neighborIndex);
+      continue;
+    }
+    if (neighborId === NITRO_SLURRY) {
+      triggerNitroSlurryExplosion(world, neighborIndex);
+      continue;
+    }
+    if (neighborId === SODIUM_METAL) {
+      forceIgnite(world, neighborIndex, SODIUM_FIRE_LIFETIME);
+      continue;
+    }
+    if (isWaterLike(neighborId)) {
+      spawnSteam(world, neighborIndex, Math.max(120, STEAM_DEFAULT_LIFETIME));
+      continue;
+    }
+    if (neighborId === ICE) {
+      transformCell(world, neighborIndex, WATER);
+      continue;
+    }
+    if (neighborId === EMPTY) {
+      forceIgnite(world, neighborIndex, 60);
+      continue;
+    }
+    if (!isImmovable(neighborId) && neighborId !== FIRE && neighborId !== MOLTEN_IRON) {
+      forceIgnite(world, neighborIndex, 60);
+    }
+  }
+}
+
+function triggerNitroSlurryExplosion(world, originIndex, visited = new Set()) {
+  if (!world || !world.cells) {
+    return;
+  }
+  if (visited.has(originIndex)) {
+    return;
+  }
+  const width = world.width;
+  const height = world.height;
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return;
+  }
+  visited.add(originIndex);
+
+  const metadata = getMeta(NITRO_SLURRY) || {};
+  const explosion = metadata.explosion || {};
+  const radius = Math.max(
+    1,
+    Math.trunc(
+      Number.isFinite(explosion.radius) ? explosion.radius : NITRO_SLURRY_BLAST_RADIUS,
+    ),
+  );
+  const fireLifetime = Number.isFinite(explosion.fireLifetime)
+    ? explosion.fireLifetime
+    : NITRO_SLURRY_FIRE_LIFETIME;
+  const steamLifetime = Number.isFinite(explosion.steamLifetime)
+    ? explosion.steamLifetime
+    : NITRO_SLURRY_STEAM_LIFETIME;
+  const pushDistance = Math.max(
+    1,
+    Math.trunc(
+      Number.isFinite(explosion.pushDistance)
+        ? explosion.pushDistance
+        : NITRO_SLURRY_PUSH_DISTANCE,
+    ),
+  );
+  const gasId = Number.isFinite(explosion.gasId) ? explosion.gasId : CARBON_DIOXIDE;
+
+  const x0 = originIndex % width;
+  const y0 = Math.floor(originIndex / width);
+
+  transformCell(world, originIndex, FIRE);
+  setLifetime(world, originIndex, fireLifetime);
+
+  for (let dy = -radius; dy <= radius; dy += 1) {
+    const ny = y0 + dy;
+    if (ny < 0 || ny >= height) {
+      continue;
+    }
+    for (let dx = -radius; dx <= radius; dx += 1) {
+      const nx = x0 + dx;
+      if (nx < 0 || nx >= width) {
+        continue;
+      }
+      const distSq = dx * dx + dy * dy;
+      if (distSq > radius * radius) {
+        continue;
+      }
+      const targetIndex = ny * width + nx;
+      if (targetIndex === originIndex) {
+        continue;
+      }
+      const targetId = world.cells[targetIndex];
+      if (targetId === NITRO_SLURRY) {
+        triggerNitroSlurryExplosion(world, targetIndex, visited);
+        continue;
+      }
+      if (isImmovable(targetId)) {
+        continue;
+      }
+      if (isWaterLike(targetId)) {
+        spawnSteam(world, targetIndex, steamLifetime);
+        continue;
+      }
+      if (targetId === ICE) {
+        transformCell(world, targetIndex, WATER);
+        spawnSteam(world, targetIndex, steamLifetime);
+        continue;
+      }
+      if (targetId === THERMITE) {
+        igniteThermiteAt(world, targetIndex);
+        continue;
+      }
+      if (targetId === SODIUM_METAL) {
+        forceIgnite(world, targetIndex, Math.max(fireLifetime, SODIUM_FIRE_LIFETIME));
+        continue;
+      }
+      if (targetId === EMPTY || targetId === FIRE) {
+        forceIgnite(world, targetIndex, fireLifetime);
+        continue;
+      }
+      forceIgnite(world, targetIndex, fireLifetime);
+    }
+  }
+
+  for (let i = 0; i < CARDINAL_OFFSETS.length; i += 1) {
+    const [dx, dy] = CARDINAL_OFFSETS[i];
+    pushParticleOutward(world, originIndex, dx, dy, pushDistance);
+  }
+
+  emitGasAround(world, originIndex, gasId, Math.max(4, pushDistance + 1), fireLifetime + 20);
+  emitGasAround(world, originIndex, HYDROGEN, Math.max(3, pushDistance), Math.max(steamLifetime, SODIUM_HYDROGEN_LIFETIME));
 }
 
 function collectGunpowderCluster(world, startIndex) {
@@ -2298,6 +2562,85 @@ function updateGunpowder(world, x, y) {
   updateFallingPowder(world, x, y, GUNPOWDER);
 }
 
+function updateThermite(world, x, y) {
+  const width = world.width;
+  const height = world.height;
+  const index = y * width + x;
+  const cells = world.cells;
+  const metadata = getMeta(THERMITE) || {};
+  const ignition = metadata.ignition || {};
+  const sparkChance = clamp01(
+    Number.isFinite(ignition.sparkChance) ? ignition.sparkChance : THERMITE_SPARK_CHANCE,
+  );
+  const oxygenBonus = Number.isFinite(ignition.oxygenBonus)
+    ? ignition.oxygenBonus
+    : THERMITE_OXYGEN_BONUS;
+  const quenchChance = clamp01(
+    Number.isFinite(ignition.waterQuenchChance)
+      ? ignition.waterQuenchChance
+      : THERMITE_WATER_QUENCH_CHANCE,
+  );
+
+  let igniteNow = false;
+  let sparkNearby = false;
+  let oxygenNeighbors = 0;
+  let quenched = false;
+
+  for (let i = 0; i < SURROUNDING_OFFSETS.length; i += 1) {
+    const [dx, dy] = SURROUNDING_OFFSETS[i];
+    const nx = x + dx;
+    const ny = y + dy;
+    if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
+      continue;
+    }
+    const neighborIndex = ny * width + nx;
+    const neighborId = cells[neighborIndex];
+    if (neighborId === FIRE || neighborId === MOLTEN_IRON || neighborId === PLASMA_ARC) {
+      igniteNow = true;
+      break;
+    }
+    if (neighborId === PIXIE_SPARK) {
+      sparkNearby = true;
+    }
+    if (neighborId === OXYGEN) {
+      oxygenNeighbors += 1;
+      continue;
+    }
+    if (isWaterLike(neighborId)) {
+      quenched = true;
+      if (quenchChance > 0 && randomChance(quenchChance)) {
+        spawnSteam(world, neighborIndex, STEAM_DEFAULT_LIFETIME);
+        transformCell(world, index, RUST);
+        return;
+      }
+      continue;
+    }
+    if (neighborId === ICE) {
+      transformCell(world, neighborIndex, WATER);
+      quenched = true;
+    }
+  }
+
+  if (!igniteNow && sparkNearby) {
+    const sparkProbability = clamp01(sparkChance + oxygenNeighbors * oxygenBonus);
+    if (sparkProbability > 0 && randomChance(sparkProbability)) {
+      igniteNow = true;
+    }
+  }
+
+  if (igniteNow) {
+    igniteThermiteAt(world, index);
+    return;
+  }
+
+  if (quenched && randomChance(quenchChance * 0.15)) {
+    transformCell(world, index, RUST);
+    return;
+  }
+
+  updateFallingPowder(world, x, y, THERMITE);
+}
+
 function updateWetGunpowder(world, x, y) {
   const width = world.width;
   const height = world.height;
@@ -2842,6 +3185,175 @@ function updateSteam(world, x, y) {
   }
 
   assignLifetime(index);
+  if (world.lastMoveDir) {
+    world.lastMoveDir[index] = 0;
+  }
+}
+
+function updateDustCloud(world, x, y) {
+  const width = world.width;
+  const height = world.height;
+  const index = y * width + x;
+  const cells = world.cells;
+  const lifetimes = world.lifetimes;
+  const metadata = getMeta(DUST_CLOUD) || {};
+  const baseLifetime = Math.max(
+    30,
+    Math.trunc(
+      Number.isFinite(metadata.lifetime) ? metadata.lifetime : DUST_CLOUD_DEFAULT_LIFETIME,
+    ),
+  );
+  const volatility = clamp01(
+    Number.isFinite(metadata.volatility) ? metadata.volatility : DUST_CLOUD_BASE_VOLATILITY,
+  );
+  let lifetime = baseLifetime;
+  if (lifetimes) {
+    const stored = lifetimes[index];
+    lifetime = stored > 0 ? stored : baseLifetime;
+    lifetime = Math.max(0, lifetime - 1);
+  }
+
+  let ignitionSource = false;
+  let sparkNearby = false;
+  let oxygenNeighbors = 0;
+
+  for (let i = 0; i < SURROUNDING_OFFSETS.length; i += 1) {
+    const [dx, dy] = SURROUNDING_OFFSETS[i];
+    const nx = x + dx;
+    const ny = y + dy;
+    if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
+      continue;
+    }
+    const neighborId = cells[ny * width + nx];
+    if (neighborId === FIRE || neighborId === PLASMA_ARC) {
+      ignitionSource = true;
+      break;
+    }
+    if (neighborId === PIXIE_SPARK) {
+      sparkNearby = true;
+    }
+    if (neighborId === OXYGEN) {
+      oxygenNeighbors += 1;
+    }
+  }
+
+  if (!ignitionSource && sparkNearby) {
+    const igniteChance = clamp01(volatility + oxygenNeighbors * 0.12);
+    if (igniteChance > 0 && randomChance(igniteChance)) {
+      ignitionSource = true;
+    }
+  }
+
+  if (ignitionSource) {
+    forceIgnite(world, index, Math.max(80, Math.trunc(baseLifetime / 2)));
+    emitGasAround(world, index, CARBON_DIOXIDE, 3, 200);
+    return;
+  }
+
+  const assignLifetime = (targetIndex) => {
+    if (lifetimes) {
+      lifetimes[targetIndex] = Math.max(0, Math.min(255, lifetime));
+    }
+  };
+
+  const density = densityOf(DUST_CLOUD);
+  const parity = currentStep.frameParity;
+  const rng = currentStep.rng;
+
+  const attemptSwap = (targetIndex, afterSwapDir) => {
+    if (
+      trySwapInternal(world, index, targetIndex, {
+        afterSwapDir,
+        allowDenser: true,
+        allowEqualDensity: true,
+      })
+    ) {
+      assignLifetime(targetIndex);
+      return true;
+    }
+    return false;
+  };
+
+  if (y > 0) {
+    const aboveIndex = index - width;
+    const aboveId = cells[aboveIndex];
+    if (isEmpty(aboveId) || (isGas(aboveId) && densityOf(aboveId) > density)) {
+      if (attemptSwap(aboveIndex, 0)) {
+        return;
+      }
+    }
+  }
+
+  const diagonalOrder = parity === 0 ? [-1, 1] : [1, -1];
+  if (rng && rng() < 0.4) {
+    diagonalOrder.reverse();
+  }
+
+  for (let i = 0; i < diagonalOrder.length; i += 1) {
+    const dir = diagonalOrder[i];
+    const nx = x + dir;
+    const ny = y - 1;
+    if (nx < 0 || nx >= width || ny < 0) {
+      continue;
+    }
+    const targetIndex = ny * width + nx;
+    const targetId = cells[targetIndex];
+    if (isEmpty(targetId) || (isGas(targetId) && densityOf(targetId) > density)) {
+      if (attemptSwap(targetIndex, dir)) {
+        return;
+      }
+    }
+  }
+
+  if ((rng ? rng() : Math.random()) < 0.6) {
+    const lateralOrder = parity === 0 ? [1, -1] : [-1, 1];
+    if (rng && rng() < 0.5) {
+      lateralOrder.reverse();
+    }
+    for (let i = 0; i < lateralOrder.length; i += 1) {
+      const dir = lateralOrder[i];
+      const nx = x + dir;
+      if (nx < 0 || nx >= width) {
+        continue;
+      }
+      const targetIndex = y * width + nx;
+      const targetId = cells[targetIndex];
+      if (isEmpty(targetId) || (isGas(targetId) && densityOf(targetId) >= density)) {
+        if (attemptSwap(targetIndex, dir)) {
+          return;
+        }
+      }
+    }
+  }
+
+  if (lifetimes) {
+    lifetimes[index] = Math.max(0, Math.min(255, lifetime));
+  }
+
+  const belowSolid =
+    y + 1 >= height ||
+    (() => {
+      if (y + 1 >= height) {
+        return true;
+      }
+      const belowId = cells[index + width];
+      return !isEmpty(belowId) && !isGas(belowId);
+    })();
+
+  if (lifetime <= 0) {
+    if (belowSolid || randomChance(0.25)) {
+      transformCell(world, index, ASH);
+    } else {
+      transformCell(world, index, EMPTY);
+    }
+    return;
+  }
+
+  if (belowSolid && randomChance(DUST_CLOUD_SETTLE_CHANCE)) {
+    transformCell(world, index, ASH);
+    return;
+  }
+
   if (world.lastMoveDir) {
     world.lastMoveDir[index] = 0;
   }
@@ -3518,6 +4030,178 @@ function updateAntimatterVapor(world, x, y) {
   }
 }
 
+function updatePlasmaArc(world, x, y) {
+  const width = world.width;
+  const height = world.height;
+  const index = y * width + x;
+  const cells = world.cells;
+  const lifetimes = world.lifetimes;
+  const metadata = getMeta(PLASMA_ARC) || {};
+  const baseLifetime = Math.max(
+    20,
+    Math.trunc(
+      Number.isFinite(metadata.lifetime) ? metadata.lifetime : PLASMA_ARC_DEFAULT_LIFETIME,
+    ),
+  );
+  const sparkChance = clamp01(
+    Number.isFinite(metadata.sparkChance) ? metadata.sparkChance : PLASMA_ARC_SPARK_CHANCE,
+  );
+  const igniteChance = clamp01(
+    Number.isFinite(metadata.igniteChance) ? metadata.igniteChance : PLASMA_ARC_IGNITE_CHANCE,
+  );
+  const density = densityOf(PLASMA_ARC);
+  const parity = currentStep.frameParity;
+  const rng = currentStep.rng;
+
+  let lifetime = baseLifetime;
+  if (lifetimes) {
+    const stored = lifetimes[index];
+    lifetime = stored > 0 ? stored : baseLifetime;
+    lifetime = Math.max(0, lifetime - 1);
+  }
+
+  let energized = false;
+
+  for (let i = 0; i < SURROUNDING_OFFSETS.length; i += 1) {
+    const [dx, dy] = SURROUNDING_OFFSETS[i];
+    const nx = x + dx;
+    const ny = y + dy;
+    if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
+      continue;
+    }
+    const neighborIndex = ny * width + nx;
+    const neighborId = cells[neighborIndex];
+    if (neighborId === THERMITE) {
+      igniteThermiteAt(world, neighborIndex);
+      continue;
+    }
+    if (neighborId === NITRO_SLURRY) {
+      triggerNitroSlurryExplosion(world, neighborIndex);
+      continue;
+    }
+    if (neighborId === SODIUM_METAL) {
+      forceIgnite(world, neighborIndex, SODIUM_FIRE_LIFETIME);
+      continue;
+    }
+    if (isWaterLike(neighborId)) {
+      spawnSteam(world, neighborIndex, STEAM_DEFAULT_LIFETIME);
+      energized = true;
+      continue;
+    }
+    if (neighborId === ICE) {
+      transformCell(world, neighborIndex, WATER);
+      energized = true;
+      continue;
+    }
+    if (neighborId === FIRE) {
+      energized = true;
+      continue;
+    }
+    if (neighborId === EMPTY && randomChance(sparkChance)) {
+      forceIgnite(world, neighborIndex, Math.max(40, Math.trunc(baseLifetime / 2)));
+      continue;
+    }
+    if (!isImmovable(neighborId) && neighborId !== PLASMA_ARC && neighborId !== FIRE) {
+      if (randomChance(igniteChance)) {
+        forceIgnite(world, neighborIndex, Math.max(60, Math.trunc(baseLifetime / 2)));
+      }
+    }
+  }
+
+  if (energized && lifetimes) {
+    lifetime = Math.min(255, lifetime + 2);
+  }
+
+  const assignLifetime = (targetIndex) => {
+    if (lifetimes) {
+      lifetimes[targetIndex] = Math.max(0, Math.min(255, lifetime));
+    }
+  };
+
+  if (y > 0) {
+    const aboveIndex = index - width;
+    const aboveId = cells[aboveIndex];
+    if (isEmpty(aboveId) || (isGas(aboveId) && densityOf(aboveId) > density)) {
+      if (
+        trySwapInternal(world, index, aboveIndex, {
+          afterSwapDir: 0,
+          allowDenser: true,
+          allowEqualDensity: true,
+        })
+      ) {
+        assignLifetime(aboveIndex);
+        return;
+      }
+    }
+  }
+
+  const diagonalOrder = parity === 0 ? [-1, 1] : [1, -1];
+  if (rng && rng() < 0.45) {
+    diagonalOrder.reverse();
+  }
+
+  for (let i = 0; i < diagonalOrder.length; i += 1) {
+    const dir = diagonalOrder[i];
+    const nx = x + dir;
+    const ny = y - 1;
+    if (nx < 0 || nx >= width || ny < 0) {
+      continue;
+    }
+    const targetIndex = ny * width + nx;
+    const targetId = cells[targetIndex];
+    if (isEmpty(targetId) || (isGas(targetId) && densityOf(targetId) > density)) {
+      if (
+        trySwapInternal(world, index, targetIndex, {
+          afterSwapDir: dir,
+          allowDenser: true,
+          allowEqualDensity: true,
+        })
+      ) {
+        assignLifetime(targetIndex);
+        return;
+      }
+    }
+  }
+
+  if ((rng ? rng() : Math.random()) < 0.5) {
+    const lateralOrder = parity === 0 ? [1, -1] : [-1, 1];
+    if (rng && rng() < 0.5) {
+      lateralOrder.reverse();
+    }
+    for (let i = 0; i < lateralOrder.length; i += 1) {
+      const dir = lateralOrder[i];
+      const nx = x + dir;
+      if (nx < 0 || nx >= width) {
+        continue;
+      }
+      const targetIndex = y * width + nx;
+      const targetId = cells[targetIndex];
+      if (isEmpty(targetId) || (isGas(targetId) && densityOf(targetId) >= density)) {
+        if (
+          trySwapInternal(world, index, targetIndex, {
+            afterSwapDir: dir,
+            allowDenser: true,
+            allowEqualDensity: true,
+          })
+        ) {
+          assignLifetime(targetIndex);
+          return;
+        }
+      }
+    }
+  }
+
+  if (lifetime <= 0) {
+    forceIgnite(world, index, Math.max(60, Math.trunc(baseLifetime / 2)));
+    return;
+  }
+
+  assignLifetime(index);
+  if (world.lastMoveDir) {
+    world.lastMoveDir[index] = 0;
+  }
+}
+
 function updateWater(world, x, y) {
   const width = world.width;
   const height = world.height;
@@ -3955,6 +4639,180 @@ function updateOil(world, x, y) {
   }
 
   if (world.lastMoveDir && !movedLaterally) {
+    world.lastMoveDir[index] = 0;
+  }
+}
+
+function updateNitroSlurry(world, x, y) {
+  const width = world.width;
+  const height = world.height;
+  const index = y * width + x;
+  const cells = world.cells;
+  const metadata = getMeta(NITRO_SLURRY) || {};
+  const nitroDensity = densityOf(NITRO_SLURRY);
+  const viscosity = Math.max(1, Math.trunc(metadata.viscosity ?? 2));
+  const lateralRunMax = Math.max(1, Math.trunc(metadata.lateralRunMax ?? 2));
+  const buoyancy = Number.isFinite(metadata.buoyancy) ? metadata.buoyancy : 0;
+  const volatility = clamp01(
+    Number.isFinite(metadata.volatility) ? metadata.volatility : NITRO_SLURRY_DEFAULT_VOLATILITY,
+  );
+  const parity = currentStep.frameParity;
+  const rng = currentStep.rng;
+  const previousDir = world.lastMoveDir ? world.lastMoveDir[index] : 0;
+
+  let igniteNow = false;
+  let catalystNearby = false;
+  let oxygenNeighbors = 0;
+
+  for (let i = 0; i < SURROUNDING_OFFSETS.length; i += 1) {
+    const [dx, dy] = SURROUNDING_OFFSETS[i];
+    const nx = x + dx;
+    const ny = y + dy;
+    if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
+      continue;
+    }
+    const neighborIndex = ny * width + nx;
+    const neighborId = cells[neighborIndex];
+    if (neighborId === FIRE || neighborId === PLASMA_ARC || neighborId === MOLTEN_IRON) {
+      igniteNow = true;
+      break;
+    }
+    if (neighborId === PIXIE_SPARK || neighborId === THERMITE || neighborId === SODIUM_METAL) {
+      catalystNearby = true;
+    }
+    if (neighborId === OXYGEN) {
+      oxygenNeighbors += 1;
+    }
+  }
+
+  if (!igniteNow && catalystNearby) {
+    const igniteChance = clamp01(volatility + oxygenNeighbors * 0.15);
+    if (igniteChance > 0 && randomChance(igniteChance)) {
+      igniteNow = true;
+    }
+  }
+
+  if (igniteNow) {
+    triggerNitroSlurryExplosion(world, index);
+    return;
+  }
+
+  const belowY = y + 1;
+  if (belowY < height) {
+    const belowIndex = index + width;
+    const belowId = cells[belowIndex];
+    if (isEmpty(belowId)) {
+      if (trySwapInternal(world, index, belowIndex, { afterSwapDir: 0 })) {
+        return;
+      }
+    } else if (isLiquid(belowId) && densityOf(belowId) < nitroDensity) {
+      if (trySwapInternal(world, index, belowIndex, { afterSwapDir: 0 })) {
+        return;
+      }
+    } else if (!isImmovable(belowId) && densityOf(belowId) < nitroDensity) {
+      if (trySwapInternal(world, index, belowIndex, { afterSwapDir: 0, allowDenser: true })) {
+        return;
+      }
+    }
+  } else {
+    if (world.lastMoveDir) {
+      world.lastMoveDir[index] = 0;
+    }
+    return;
+  }
+
+  const diagonalOrder = parity === 0 ? [-1, 1] : [1, -1];
+  if (rng && rng() < 0.35) {
+    diagonalOrder.reverse();
+  }
+
+  for (let i = 0; i < diagonalOrder.length; i += 1) {
+    const dir = diagonalOrder[i];
+    const nx = x + dir;
+    const ny = y + 1;
+    if (nx < 0 || nx >= width || ny >= height) {
+      continue;
+    }
+    const targetIndex = ny * width + nx;
+    const targetId = cells[targetIndex];
+    if (isEmpty(targetId)) {
+      if (trySwapInternal(world, index, targetIndex, { afterSwapDir: dir })) {
+        return;
+      }
+    } else if (isLiquid(targetId) && densityOf(targetId) < nitroDensity) {
+      if (trySwapInternal(world, index, targetIndex, { afterSwapDir: dir })) {
+        return;
+      }
+    } else if (!isImmovable(targetId) && densityOf(targetId) < nitroDensity) {
+      if (trySwapInternal(world, index, targetIndex, { afterSwapDir: dir, allowDenser: true })) {
+        return;
+      }
+    }
+  }
+
+  if (y > 0 && buoyancy > 0) {
+    const aboveIndex = index - width;
+    const aboveId = cells[aboveIndex];
+    if (
+      !isImmovable(aboveId) &&
+      isLiquid(aboveId) &&
+      densityOf(aboveId) > nitroDensity &&
+      randomChance(clamp01(0.05 + 0.03 * buoyancy))
+    ) {
+      if (trySwapInternal(world, index, aboveIndex, { allowDenser: true, cooldown: true })) {
+        if (world.lastMoveDir) {
+          world.lastMoveDir[aboveIndex] = 0;
+        }
+        return;
+      }
+    }
+  }
+
+  let attemptLateral = true;
+  if (viscosity > 1) {
+    const lateralChance = 1 / Math.max(1, viscosity);
+    attemptLateral = (rng ? rng() : Math.random()) < lateralChance;
+  }
+
+  if (attemptLateral) {
+    const lateralOrder = chooseLateralOrder(previousDir, parity, rng);
+    for (let i = 0; i < lateralOrder.length; i += 1) {
+      const dir = lateralOrder[i];
+      if (dir === 0) {
+        continue;
+      }
+      let bestIndex = -1;
+      for (let step = 1; step <= lateralRunMax; step += 1) {
+        const nx = x + dir * step;
+        if (nx < 0 || nx >= width) {
+          break;
+        }
+        const candidateIndex = y * width + nx;
+        if (!isEmpty(cells[candidateIndex])) {
+          break;
+        }
+        const supportY = y + 1;
+        if (supportY >= height) {
+          bestIndex = candidateIndex;
+          continue;
+        }
+        const supportIndex = candidateIndex + width;
+        const supportId = cells[supportIndex];
+        if (canFallThrough(supportId, nitroDensity)) {
+          bestIndex = candidateIndex;
+        } else {
+          break;
+        }
+      }
+      if (bestIndex !== -1) {
+        if (trySwapInternal(world, index, bestIndex, { afterSwapDir: dir })) {
+          return;
+        }
+      }
+    }
+  }
+
+  if (world.lastMoveDir) {
     world.lastMoveDir[index] = 0;
   }
 }
@@ -4859,6 +5717,11 @@ UPDATERS[MOLTEN_IRON] = updateMoltenIron;
 UPDATERS[WOOD] = updateWood;
 UPDATERS[DRY_ICE] = updateDryIce;
 UPDATERS[NEUTRONIUM_CORE] = updateNeutroniumCore;
+UPDATERS[DUST_CLOUD] = updateDustCloud;
+UPDATERS[THERMITE] = updateThermite;
+UPDATERS[NITRO_SLURRY] = updateNitroSlurry;
+UPDATERS[PLASMA_ARC] = updatePlasmaArc;
+UPDATERS[SODIUM_METAL] = updateSodiumMetal;
 UPDATERS[GOLD] = updateGold;
 UPDATERS[PHILOSOPHERS_STONE] = updatePhilosophersStone;
 
