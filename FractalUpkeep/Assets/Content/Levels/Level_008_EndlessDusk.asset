@@ -1,0 +1,46 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0000000000000000e000000000000000, type: 3}
+  m_Name: Level_008_EndlessDusk
+  m_EditorClassIdentifier:
+  levelId: level_008
+  levelName: Endless Dusk
+  description: Survive for 2 minutes while maintaining at least 40 Beauty. The fade never stops.
+  levelNumber: 8
+  tierNumber: 3
+  primaryObjective: 2
+  targetBeauty: 40
+  targetCoverage: 0.4
+  timeLimit: 120
+  hasTimeLimit: true
+  fadeIntensity: 0.018
+  decayEnabled: true
+  unlockedBrushes: []
+  unlockedPalettes: []
+  seedsUnlocked: true
+  mothsUnlocked: true
+  sealUnlocked: true
+  startingSeedSlots: 5
+  startingMothSlots: 4
+  maxBrushSize: 100
+  maxColors: 8
+  allowUndo: true
+  sporeReward: 25
+  pigmentBonus: 250
+  unlockRewards: []
+  thumbnailSprite: {fileID: 0}
+  levelPalette:
+  - {r: 0.25, g: 0.2, b: 0.15, a: 1}
+  - {r: 0.45, g: 0.35, b: 0.25, a: 1}
+  - {r: 0.6, g: 0.45, b: 0.3, a: 1}
+  - {r: 0.35, g: 0.25, b: 0.2, a: 1}
+  backgroundTexture: {fileID: 0}

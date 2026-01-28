@@ -1,0 +1,47 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0000000000000000e000000000000000, type: 3}
+  m_Name: Level_003_SeedOfHope
+  m_EditorClassIdentifier:
+  levelId: level_003
+  levelName: Seed of Hope
+  description: Plant your first Seed! Seeds paint automatically but slowly. Use them wisely.
+  levelNumber: 3
+  tierNumber: 1
+  primaryObjective: 0
+  targetBeauty: 40
+  targetCoverage: 0.4
+  timeLimit: 120
+  hasTimeLimit: true
+  fadeIntensity: 0.008
+  decayEnabled: true
+  unlockedBrushes: []
+  unlockedPalettes: []
+  seedsUnlocked: true
+  mothsUnlocked: false
+  sealUnlocked: false
+  startingSeedSlots: 2
+  startingMothSlots: 0
+  maxBrushSize: 100
+  maxColors: 8
+  allowUndo: true
+  sporeReward: 10
+  pigmentBonus: 100
+  unlockRewards:
+  - seed_basic
+  thumbnailSprite: {fileID: 0}
+  levelPalette:
+  - {r: 0.15, g: 0.2, b: 0.15, a: 1}
+  - {r: 0.25, g: 0.35, b: 0.2, a: 1}
+  - {r: 0.4, g: 0.5, b: 0.3, a: 1}
+  - {r: 0.2, g: 0.25, b: 0.3, a: 1}
+  backgroundTexture: {fileID: 0}

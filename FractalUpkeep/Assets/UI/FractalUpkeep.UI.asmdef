@@ -1,0 +1,20 @@
+{
+    "name": "FractalUpkeep.UI",
+    "rootNamespace": "FractalUpkeep.UI",
+    "references": [
+        "FractalUpkeep.Core",
+        "FractalUpkeep.Canvas",
+        "FractalUpkeep.Levels",
+        "FractalUpkeep.Content",
+        "Unity.TextMeshPro"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

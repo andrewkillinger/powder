@@ -1,0 +1,49 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0000000000000000e000000000000000, type: 3}
+  m_Name: Level_010_EternalCanvas
+  m_EditorClassIdentifier:
+  levelId: level_010
+  levelName: Eternal Canvas
+  description: The ultimate challenge. Maintain 60 Beauty for 3 minutes against relentless decay.
+  levelNumber: 10
+  tierNumber: 3
+  primaryObjective: 4
+  targetBeauty: 60
+  targetCoverage: 0.55
+  timeLimit: 180
+  hasTimeLimit: true
+  fadeIntensity: 0.022
+  decayEnabled: true
+  unlockedBrushes: []
+  unlockedPalettes: []
+  seedsUnlocked: true
+  mothsUnlocked: true
+  sealUnlocked: true
+  startingSeedSlots: 8
+  startingMothSlots: 6
+  maxBrushSize: 100
+  maxColors: 8
+  allowUndo: true
+  sporeReward: 50
+  pigmentBonus: 500
+  unlockRewards:
+  - palette_master
+  thumbnailSprite: {fileID: 0}
+  levelPalette:
+  - {r: 0.1, g: 0.1, b: 0.15, a: 1}
+  - {r: 0.2, g: 0.25, b: 0.35, a: 1}
+  - {r: 0.35, g: 0.4, b: 0.5, a: 1}
+  - {r: 0.5, g: 0.45, b: 0.4, a: 1}
+  - {r: 0.65, g: 0.55, b: 0.45, a: 1}
+  - {r: 0.4, g: 0.3, b: 0.35, a: 1}
+  backgroundTexture: {fileID: 0}
