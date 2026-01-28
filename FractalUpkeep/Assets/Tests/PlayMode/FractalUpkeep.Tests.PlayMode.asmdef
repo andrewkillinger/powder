@@ -1,0 +1,26 @@
+{
+    "name": "FractalUpkeep.Tests.PlayMode",
+    "rootNamespace": "FractalUpkeep.Tests",
+    "references": [
+        "UnityEngine.TestRunner",
+        "UnityEditor.TestRunner",
+        "FractalUpkeep.Core",
+        "FractalUpkeep.Canvas",
+        "FractalUpkeep.Sim",
+        "FractalUpkeep.Levels",
+        "FractalUpkeep.Units"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "nunit.framework.dll"
+    ],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "UNITY_INCLUDE_TESTS"
+    ],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

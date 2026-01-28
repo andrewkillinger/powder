@@ -1,0 +1,46 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0000000000000000e000000000000000, type: 3}
+  m_Name: Level_004_RacingDecay
+  m_EditorClassIdentifier:
+  levelId: level_004
+  levelName: Racing Decay
+  description: Faster fade rate! Reach 50 Beauty quickly before the canvas fades away.
+  levelNumber: 4
+  tierNumber: 1
+  primaryObjective: 0
+  targetBeauty: 50
+  targetCoverage: 0.45
+  timeLimit: 90
+  hasTimeLimit: true
+  fadeIntensity: 0.015
+  decayEnabled: true
+  unlockedBrushes: []
+  unlockedPalettes: []
+  seedsUnlocked: true
+  mothsUnlocked: false
+  sealUnlocked: false
+  startingSeedSlots: 3
+  startingMothSlots: 0
+  maxBrushSize: 100
+  maxColors: 8
+  allowUndo: true
+  sporeReward: 12
+  pigmentBonus: 125
+  unlockRewards: []
+  thumbnailSprite: {fileID: 0}
+  levelPalette:
+  - {r: 0.3, g: 0.15, b: 0.15, a: 1}
+  - {r: 0.5, g: 0.25, b: 0.2, a: 1}
+  - {r: 0.7, g: 0.4, b: 0.3, a: 1}
+  - {r: 0.35, g: 0.2, b: 0.25, a: 1}
+  backgroundTexture: {fileID: 0}

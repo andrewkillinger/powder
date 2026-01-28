@@ -1,0 +1,46 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0000000000000000e000000000000000, type: 3}
+  m_Name: Level_002_FadingLight
+  m_EditorClassIdentifier:
+  levelId: level_002
+  levelName: Fading Light
+  description: The canvas fades over time! Reach 30 Beauty before the fade takes over.
+  levelNumber: 2
+  tierNumber: 1
+  primaryObjective: 0
+  targetBeauty: 30
+  targetCoverage: 0.3
+  timeLimit: 90
+  hasTimeLimit: true
+  fadeIntensity: 0.005
+  decayEnabled: true
+  unlockedBrushes: []
+  unlockedPalettes: []
+  seedsUnlocked: false
+  mothsUnlocked: false
+  sealUnlocked: false
+  startingSeedSlots: 0
+  startingMothSlots: 0
+  maxBrushSize: 100
+  maxColors: 8
+  allowUndo: true
+  sporeReward: 8
+  pigmentBonus: 75
+  unlockRewards: []
+  thumbnailSprite: {fileID: 0}
+  levelPalette:
+  - {r: 0.15, g: 0.12, b: 0.1, a: 1}
+  - {r: 0.4, g: 0.3, b: 0.2, a: 1}
+  - {r: 0.6, g: 0.5, b: 0.35, a: 1}
+  - {r: 0.25, g: 0.2, b: 0.35, a: 1}
+  backgroundTexture: {fileID: 0}

@@ -1,0 +1,16 @@
+{
+    "name": "FractalUpkeep.Content",
+    "rootNamespace": "FractalUpkeep.Content",
+    "references": [
+        "FractalUpkeep.Core"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

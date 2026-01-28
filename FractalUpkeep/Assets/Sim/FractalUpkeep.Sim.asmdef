@@ -1,0 +1,17 @@
+{
+    "name": "FractalUpkeep.Sim",
+    "rootNamespace": "FractalUpkeep.Sim",
+    "references": [
+        "FractalUpkeep.Core",
+        "FractalUpkeep.Canvas"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
